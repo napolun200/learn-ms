@@ -1137,8 +1137,114 @@ public class ShowDemo {
         }
     }
 
+    //AbstractBeanFactory:
+    //删除指定bean的合并bean定义，在next acces上重新创建它
+    protected void clearMergedBeanDefinition(String beanName) {
+        //Map<String, RootBeanDefinition> mergedBeanDefinitions = new ConcurrentHashMap<>(256)
+        //从bean名称映射到合并的RootBeanDefinition
+        RootBeanDefinition bd = this.mergedBeanDefinitions.get(beanName);
+        if (bd != null) {
+            //boolean stale; 确定是否需要重新合并定义
+            bd.stale = true;
+        }
+    }
 
+    //DefaultListableBeanFactory:
+    public void destroySingleton(String beanName) {
+        super.destroySingleton(beanName);
+        removeManualSingletonName(beanName);
+        clearByTypeCache();
+    }
 
+    //DefaultSingletonBeanRegistry:
+    public void destroySingleton(String beanName) {
+        //删除已注册的给定名称单例(如果有的话)
+        removeSingleton(beanName);
 
+        //销毁相应的DisposableBean实例
+        DisposableBean disposableBean;
+        // Map<String, Object> disposableBeans = new LinkedHashMap<>()
+        //包含处理bean实例的map， 映射为：beanName --> disposableBean
+        synchronized (this.disposableBeans) {
+            disposableBean = (DisposableBean) this.disposableBeans.remove(beanName);
+        }
+        destroyBean(beanName, disposableBean);
+    }
+
+    //DefaultSingletonBeanRegistry:
+    protected void removeSingleton(String beanName) {
+        //Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256)
+        //缓存的单例对象，beanName --> bean instance
+        synchronized (this.singletonObjects) {
+            this.singletonObjects.remove(beanName);
+            //Map<String, ObjectFactory<?>> singletonFactories = new HashMap<>(16)
+            //单例工厂的缓存: beanName --> ObjectFactory
+            this.singletonFactories.remove(beanName);
+            //Map<String, Object> earlySingletonObjects = new HashMap<>(16)
+            //早期单例对象的缓存: beanName --> bean instance
+            this.earlySingletonObjects.remove(beanName);
+            //Set<String> registeredSingletons = new LinkedHashSet<>(256)
+            //已注册的单例集合，包含按注册顺序排列的bean名称
+            this.registeredSingletons.remove(beanName);
+        }
+    }
+
+    //DefaultSingletonBeanRegistry:
+    //销毁给定的bean。必须在bean销毁之前销毁依赖于它本身的bean。不应该抛出任何异常。
+    protected void destroyBean(String beanName, @Nullable DisposableBean bean) {
+        //首先触发从属bean的销毁
+        Set<String> dependencies;
+        synchronized (this.dependentBeanMap) {
+            // Within full synchronization in order to guarantee a disconnected Set
+            dependencies = this.dependentBeanMap.remove(beanName);
+        }
+        if (dependencies != null) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("Retrieved dependent beans for bean '" + beanName + "': " + dependencies);
+            }
+            for (String dependentBeanName : dependencies) {
+                destroySingleton(dependentBeanName);
+            }
+        }
+
+        // Actually destroy the bean now...
+        if (bean != null) {
+            try {
+                bean.destroy();
+            }
+            catch (Throwable ex) {
+                if (logger.isWarnEnabled()) {
+                    logger.warn("Destruction of bean with name '" + beanName + "' threw an exception", ex);
+                }
+            }
+        }
+
+        // Trigger destruction of contained beans...
+        Set<String> containedBeans;
+        synchronized (this.containedBeanMap) {
+            // Within full synchronization in order to guarantee a disconnected Set
+            containedBeans = this.containedBeanMap.remove(beanName);
+        }
+        if (containedBeans != null) {
+            for (String containedBeanName : containedBeans) {
+                destroySingleton(containedBeanName);
+            }
+        }
+
+        // Remove destroyed bean from other beans' dependencies.
+        synchronized (this.dependentBeanMap) {
+            for (Iterator<Map.Entry<String, Set<String>>> it = this.dependentBeanMap.entrySet().iterator(); it.hasNext();) {
+                Map.Entry<String, Set<String>> entry = it.next();
+                Set<String> dependenciesToClean = entry.getValue();
+                dependenciesToClean.remove(beanName);
+                if (dependenciesToClean.isEmpty()) {
+                    it.remove();
+                }
+            }
+        }
+
+        // Remove destroyed bean's prepared dependency information.
+        this.dependenciesForBeanMap.remove(beanName);
+    }
 
 }
