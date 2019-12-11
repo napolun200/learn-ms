@@ -34,9 +34,13 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Method;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.security.AccessController;
+import java.security.PrivilegedExceptionAction;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -1156,6 +1160,16 @@ public class ShowDemo {
         clearByTypeCache();
     }
 
+    //DefaultListableBeanFactory:
+    private void clearByTypeCache() {
+        //Map<Class<?>, String[]> allBeanNamesByType = new ConcurrentHashMap<>(64)
+        //Bean类型对应的所有beanName数组，key=ClassType, value = beanName数组
+        this.allBeanNamesByType.clear();
+        //Map<Class<?>, String[]> singletonBeanNamesByType = new ConcurrentHashMap<>(64)
+        //通过Bean 类型依赖的所有所有单例Bean数组map, key=ClassType, value=所有单例BeanName数组
+        this.singletonBeanNamesByType.clear();
+    }
+
     //DefaultSingletonBeanRegistry:
     public void destroySingleton(String beanName) {
         //删除已注册的给定名称单例(如果有的话)
@@ -1194,8 +1208,9 @@ public class ShowDemo {
     protected void destroyBean(String beanName, @Nullable DisposableBean bean) {
         //首先触发从属bean的销毁
         Set<String> dependencies;
+        //Map<String, Set<String>> dependentBeanMap = new ConcurrentHashMap<>(64)
+        //beanName之间依赖关系的集合, key=beanName, value=依赖这个Bean的beanName集合
         synchronized (this.dependentBeanMap) {
-            // Within full synchronization in order to guarantee a disconnected Set
             dependencies = this.dependentBeanMap.remove(beanName);
         }
         if (dependencies != null) {
@@ -1203,24 +1218,26 @@ public class ShowDemo {
                 logger.trace("Retrieved dependent beans for bean '" + beanName + "': " + dependencies);
             }
             for (String dependentBeanName : dependencies) {
+                //递归调用，删除bean的依赖BeanName集合
                 destroySingleton(dependentBeanName);
             }
         }
 
-        // Actually destroy the bean now...
+        // 真正开始销毁bean
         if (bean != null) {
             try {
                 bean.destroy();
-            }
-            catch (Throwable ex) {
+            }catch (Throwable ex) {
                 if (logger.isWarnEnabled()) {
                     logger.warn("Destruction of bean with name '" + beanName + "' threw an exception", ex);
                 }
             }
         }
 
-        // Trigger destruction of contained beans...
+        // 触发销毁包含的beans
         Set<String> containedBeans;
+        //Map<String, Set<String>> containedBeanMap = new ConcurrentHashMap<>(16)
+        //一个Bean包含的所有Bean的名字集合map， key=beanName, value=包含的所有bean的name集合
         synchronized (this.containedBeanMap) {
             // Within full synchronization in order to guarantee a disconnected Set
             containedBeans = this.containedBeanMap.remove(beanName);
@@ -1231,7 +1248,7 @@ public class ShowDemo {
             }
         }
 
-        // Remove destroyed bean from other beans' dependencies.
+        //从其他beans的依赖里移除销毁的bean
         synchronized (this.dependentBeanMap) {
             for (Iterator<Map.Entry<String, Set<String>>> it = this.dependentBeanMap.entrySet().iterator(); it.hasNext();) {
                 Map.Entry<String, Set<String>> entry = it.next();
@@ -1243,8 +1260,54 @@ public class ShowDemo {
             }
         }
 
-        // Remove destroyed bean's prepared dependency information.
+        //删除销毁bean的准备依赖信息
+        //Map<String, Set<String>> dependenciesForBeanMap = new ConcurrentHashMap<>(64)
+        //依赖于指定bean的其他BeanName集合， key=beanName, value=依赖此bean的其他BeanName集合
         this.dependenciesForBeanMap.remove(beanName);
+    }
+
+    //DisposableBeanAdapter:
+    public void destroy() {
+        //如果实现了DestructionAwareBeanPostProcessor， 就调用它的postProcessBeforeDestruction方法
+        if (!CollectionUtils.isEmpty(this.beanPostProcessors)) {
+            for (DestructionAwareBeanPostProcessor processor : this.beanPostProcessors) {
+                processor.postProcessBeforeDestruction(this.bean, this.beanName);
+            }
+        }
+
+        //调用bean的默认destroy()方法
+        if (this.invokeDisposableBean) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("Invoking destroy() on bean with name '" + this.beanName + "'");
+            }
+            try {
+                if (System.getSecurityManager() != null) {
+                    AccessController.doPrivileged((PrivilegedExceptionAction<Object>) () -> {
+                        ((DisposableBean) this.bean).destroy();
+                        return null;
+                    }, this.acc);
+                }else {
+                    ((DisposableBean) this.bean).destroy();
+                }
+            }catch (Throwable ex) {
+                String msg = "Invocation of destroy method failed on bean with name '" + this.beanName + "'";
+                if (logger.isDebugEnabled()) {
+                    logger.warn(msg, ex);
+                }else {
+                    logger.warn(msg + ": " + ex);
+                }
+            }
+        }
+
+        //如果有实现自定义的destroy方法，就调用该destroy方法
+        if (this.destroyMethod != null) {
+            invokeCustomDestroyMethod(this.destroyMethod);
+        } else if (this.destroyMethodName != null) {
+            Method methodToInvoke = determineDestroyMethod(this.destroyMethodName);
+            if (methodToInvoke != null) {
+                invokeCustomDestroyMethod(ClassUtils.getInterfaceMethodIfPossible(methodToInvoke));
+            }
+        }
     }
 
 }
