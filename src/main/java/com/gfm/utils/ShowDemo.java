@@ -1310,4 +1310,99 @@ public class ShowDemo {
         }
     }
 
+
+
+
+    //GenericApplicationContext:
+    public void registerAlias(String beanName, String alias) {
+        this.beanFactory.registerAlias(beanName, alias);
+    }
+
+    //SimpleAliasRegistry:
+    public void registerAlias(String name, String alias) {
+        Assert.hasText(name, "'name' must not be empty");
+        Assert.hasText(alias, "'alias' must not be empty");
+        //Map<String, String> aliasMap = new ConcurrentHashMap<>(16)
+        //从别名映射到规范名称的map
+        synchronized (this.aliasMap) {
+            if (alias.equals(name)) {
+                this.aliasMap.remove(alias);
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Alias definition '" + alias + "' ignored since it points to same name");
+                }
+            } else {
+                String registeredName = this.aliasMap.get(alias);
+                if (registeredName != null) {
+                    if (registeredName.equals(name)) {
+                        //别名已经存在，不需要重新注册
+                        return;
+                    }
+                    //如果不允许别名覆盖，就抛出异常
+                    if (!allowAliasOverriding()) {
+                        throw new IllegalStateException("Cannot define alias '" + alias + "' for name '" +
+                                name + "': It is already registered for name '" + registeredName + "'.");
+                    }
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Overriding alias '" + alias + "' definition for registered name '" +
+                                registeredName + "' with new target name '" + name + "'");
+                    }
+                }
+                //循环调用判断别名是否已经存在
+                checkForAliasCircle(name, alias);
+                this.aliasMap.put(alias, name);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Alias definition '" + alias + "' registered for name '" + name + "'");
+                }
+            }
+        }
+    }
+
+    //SimpleAliasRegistry:
+    protected void checkForAliasCircle(String name, String alias) {
+        if (hasAlias(alias, name)) {
+            throw new IllegalStateException("Cannot register alias '" + alias +
+                    "' for name '" + name + "': Circular reference - '" +
+                    name + "' is a direct or indirect alias for '" + alias + "' already");
+        }
+    }
+
+    //SimpleAliasRegistry:
+    public boolean hasAlias(String name, String alias) {
+        for (Map.Entry<String, String> entry : this.aliasMap.entrySet()) {
+            String registeredName = entry.getValue();
+            if (registeredName.equals(name)) {
+                String registeredAlias = entry.getKey();
+                if (registeredAlias.equals(alias) || hasAlias(registeredAlias, alias)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+
+//-------------------------------------------
+
+    //BeanDefinitionParserDelegate:
+    //解析自定义元素
+    public BeanDefinition parseCustomElement(Element ele) {
+        return parseCustomElement(ele, null);
+    }
+
+    //BeanDefinitionParserDelegate:
+    //解析自定义元素(在默认名称空间之外)
+    public BeanDefinition parseCustomElement(Element ele, @Nullable BeanDefinition containingBd) {
+        String namespaceUri = getNamespaceURI(ele);  //==> ele.getNamespaceURI()
+        if (namespaceUri == null) {
+            return null;
+        }
+        //用名称空间解析器解析namespaceUri，获取名称空间处理器
+        NamespaceHandler handler = this.readerContext.getNamespaceHandlerResolver().resolve(namespaceUri);
+        if (handler == null) {
+            error("Unable to locate Spring NamespaceHandler for XML schema namespace [" + namespaceUri + "]", ele);
+            return null;
+        }
+        return handler.parse(ele, new ParserContext(this.readerContext, this, containingBd));
+    }
+
 }
