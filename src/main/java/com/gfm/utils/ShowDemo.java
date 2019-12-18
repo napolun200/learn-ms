@@ -1,21 +1,34 @@
 package com.gfm.utils;
 
 import com.sun.org.apache.xerces.internal.dom.DOMMessageFormatter;
+import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.FatalBeanException;
 import org.springframework.beans.factory.*;
 import org.springframework.beans.factory.config.*;
-import org.springframework.beans.factory.parsing.BeanEntry;
-import org.springframework.beans.factory.parsing.ConstructorArgumentEntry;
+import org.springframework.beans.factory.parsing.*;
 import org.springframework.beans.factory.support.*;
 import org.springframework.beans.factory.xml.*;
-import org.springframework.context.ApplicationContext;
-import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.beans.support.ResourceEditorRegistrar;
+import org.springframework.context.*;
+import org.springframework.context.event.ApplicationEventMulticaster;
+import org.springframework.context.event.SimpleApplicationEventMulticaster;
+import org.springframework.context.expression.StandardBeanExpressionResolver;
+import org.springframework.context.support.*;
+import org.springframework.context.weaving.LoadTimeWeaverAwareProcessor;
+import org.springframework.core.OrderComparator;
+import org.springframework.core.Ordered;
+import org.springframework.core.PriorityOrdered;
+import org.springframework.core.ResolvableType;
 import org.springframework.core.env.EnvironmentCapable;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.io.*;
 import org.springframework.core.io.support.EncodedResource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.core.io.support.PropertiesLoaderUtils;
 import org.springframework.core.io.support.ResourcePatternResolver;
+import org.springframework.core.log.LogMessage;
 import org.springframework.lang.Nullable;
 import org.springframework.util.*;
 import org.springframework.util.xml.DomUtils;
@@ -1397,6 +1410,7 @@ public class ShowDemo {
             return null;
         }
         //用名称空间解析器解析namespaceUri，获取名称空间处理器
+        //readerContext.getNamespaceHandlerResolver() ==> (NamespaceHandlerResolver)XmlReaderContext.namespaceHandlerResolver
         NamespaceHandler handler = this.readerContext.getNamespaceHandlerResolver().resolve(namespaceUri);
         if (handler == null) {
             error("Unable to locate Spring NamespaceHandler for XML schema namespace [" + namespaceUri + "]", ele);
@@ -1404,5 +1418,630 @@ public class ShowDemo {
         }
         return handler.parse(ele, new ParserContext(this.readerContext, this, containingBd));
     }
+
+    //DefaultNamespaceHandlerResolver:
+    //从配置的映射中找到支持的名称空间URI
+    public NamespaceHandler resolve(String namespaceUri) {
+        //获取处理器映射容器map, 如果此URI已经有处理器就直接返回
+        Map<String, Object> handlerMappings = getHandlerMappings();
+        Object handlerOrClassName = handlerMappings.get(namespaceUri);
+        if (handlerOrClassName == null) {
+            return null;
+        }else if (handlerOrClassName instanceof NamespaceHandler) {
+            return (NamespaceHandler) handlerOrClassName;
+        }else {
+            String className = (String) handlerOrClassName;
+            try {
+                Class<?> handlerClass = ClassUtils.forName(className, this.classLoader);
+                if (!NamespaceHandler.class.isAssignableFrom(handlerClass)) {
+                    throw new FatalBeanException("Class [" + className + "] for namespace [" + namespaceUri +
+                            "] does not implement the [" + NamespaceHandler.class.getName() + "] interface");
+                }
+                //实例化NamespaceHandler
+                NamespaceHandler namespaceHandler = (NamespaceHandler) BeanUtils.instantiateClass(handlerClass);
+                namespaceHandler.init();
+                handlerMappings.put(namespaceUri, namespaceHandler);
+                return namespaceHandler;
+            }catch (ClassNotFoundException ex) {
+                throw new FatalBeanException("Could not find NamespaceHandler class [" + className +
+                        "] for namespace [" + namespaceUri + "]", ex);
+            }catch (LinkageError err) {
+                throw new FatalBeanException("Unresolvable class definition for NamespaceHandler class [" +
+                        className + "] for namespace [" + namespaceUri + "]", err);
+            }
+        }
+    }
+
+    //DefaultNamespaceHandlerResolver:
+    //懒加载指定的NamespaceHandler映射
+    private Map<String, Object> getHandlerMappings() {
+        //Map<String, Object> handlerMappings, 名称空间URI到处理器的映射map
+        Map<String, Object> handlerMappings = this.handlerMappings;
+        if (handlerMappings == null) {
+            synchronized (this) {
+                handlerMappings = this.handlerMappings;
+                if (handlerMappings == null) {
+                    if (logger.isTraceEnabled()) {
+                        logger.trace("Loading NamespaceHandler mappings from [" + this.handlerMappingsLocation + "]");
+                    }
+                    try {
+                        Properties mappings = PropertiesLoaderUtils.loadAllProperties(this.handlerMappingsLocation, this.classLoader);
+                        if (logger.isTraceEnabled()) {
+                            logger.trace("Loaded NamespaceHandler mappings: " + mappings);
+                        }
+                        handlerMappings = new ConcurrentHashMap<>(mappings.size());
+                        CollectionUtils.mergePropertiesIntoMap(mappings, handlerMappings);
+                        this.handlerMappings = handlerMappings;
+                    }catch (IOException ex) {
+                        throw new IllegalStateException(
+                                "Unable to load NamespaceHandler mappings from location [" + this.handlerMappingsLocation + "]", ex);
+                    }
+                }
+            }
+        }
+        return handlerMappings;
+    }
+
+
+
+    //NamespaceHandlerSupport:
+    public BeanDefinition parse(Element element, ParserContext parserContext) {
+        BeanDefinitionParser parser = findParserForElement(element, parserContext);
+        return (parser != null ? parser.parse(element, parserContext) : null);
+    }
+
+    //NamespaceHandlerSupport:
+    private BeanDefinitionParser findParserForElement(Element element, ParserContext parserContext) {
+        //BeanDefinitionParserDelegate.getLocalName(element)
+        String localName = parserContext.getDelegate().getLocalName(element);
+        //Map<String, BeanDefinitionParser> parsers = new HashMap<>()
+        BeanDefinitionParser parser = this.parsers.get(localName);
+        if (parser == null) {
+            parserContext.getReaderContext().fatal(
+                    "Cannot locate BeanDefinitionParser for element [" + localName + "]", element);
+        }
+        return parser;
+    }
+
+    //AbstractBeanDefinitionParser:
+    public final BeanDefinition parse(Element element, ParserContext parserContext) {
+        //将Element解析成BeanDefinition
+        AbstractBeanDefinition definition = parseInternal(element, parserContext);
+        if (definition != null && !parserContext.isNested()) {
+            try {
+                String id = resolveId(element, definition, parserContext);
+                if (!StringUtils.hasText(id)) {
+                    parserContext.getReaderContext().error(
+                            "Id is required for element '" + parserContext.getDelegate().getLocalName(element)
+                                    + "' when used as a top-level tag", element);
+                }
+                String[] aliases = null;
+                if (shouldParseNameAsAliases()) {
+                    String name = element.getAttribute(NAME_ATTRIBUTE);
+                    if (StringUtils.hasLength(name)) {
+                        aliases = StringUtils.trimArrayElements(StringUtils.commaDelimitedListToStringArray(name));
+                    }
+                }
+                //构建处理BeanDefinition的BeanDefinitionHolder
+                BeanDefinitionHolder holder = new BeanDefinitionHolder(definition, id, aliases);
+                //向BeanFactory注册BeanDefinition
+                registerBeanDefinition(holder, parserContext.getRegistry());
+                if (shouldFireEvents()) {
+                    BeanComponentDefinition componentDefinition = new BeanComponentDefinition(holder);
+                    postProcessComponentDefinition(componentDefinition);
+                    //注册组件
+                    parserContext.registerComponent(componentDefinition);
+                }
+            } catch (BeanDefinitionStoreException ex) {
+                String msg = ex.getMessage();
+                parserContext.getReaderContext().error((msg != null ? msg : ex.toString()), element);
+                return null;
+            }
+        }
+        return definition;
+    }
+
+    //AbstractSingleBeanDefinitionParser:
+    protected final AbstractBeanDefinition parseInternal(Element element, ParserContext parserContext) {
+        BeanDefinitionBuilder builder = BeanDefinitionBuilder.genericBeanDefinition();
+        String parentName = getParentName(element);
+        if (parentName != null) {
+            builder.getRawBeanDefinition().setParentName(parentName);
+        }
+        Class<?> beanClass = getBeanClass(element);
+        if (beanClass != null) {
+            builder.getRawBeanDefinition().setBeanClass(beanClass);
+        } else {
+            String beanClassName = getBeanClassName(element);
+            if (beanClassName != null) {
+                builder.getRawBeanDefinition().setBeanClassName(beanClassName);
+            }
+        }
+        builder.getRawBeanDefinition().setSource(parserContext.extractSource(element));
+        // (BeanDefinition) ParserContext.containingBeanDefinition
+        BeanDefinition containingBd = parserContext.getContainingBeanDefinition();
+        if (containingBd != null) {
+            //内部bean定义必须接收与包含bean相同的作用域
+            builder.setScope(containingBd.getScope());
+        }
+        if (parserContext.isDefaultLazyInit()) {
+            //设置默认开启懒加载
+            builder.setLazyInit(true);
+        }
+        //真正开始解析配xml的Element
+        doParse(element, parserContext, builder);
+        return builder.getBeanDefinition();
+    }
+
+    //AbstractSingleBeanDefinitionParser:
+    protected void doParse(Element element, ParserContext parserContext, BeanDefinitionBuilder builder) {
+        doParse(element, builder);
+    }
+
+    //AbstractSingleBeanDefinitionParser:
+    //有自定义的需求就子类继承并实现此方法
+    protected void doParse(Element element, BeanDefinitionBuilder builder) {
+    }
+
+    //ParserContext:
+    public void registerComponent(ComponentDefinition component) {
+        CompositeComponentDefinition containingComponent = getContainingComponent();
+        if (containingComponent != null) {
+            //List<ComponentDefinition> nestedComponents = new ArrayList<>()
+            containingComponent.addNestedComponent(component);
+        }else {
+            //触发一个组件注册事件
+            this.readerContext.fireComponentRegistered(component);
+        }
+    }
+
+    //CompositeComponentDefinition:
+    public void fireComponentRegistered(ComponentDefinition componentDefinition) {
+        //ReaderEventListener eventListener
+        this.eventListener.componentRegistered(componentDefinition);
+    }
+
+    /**
+     * ---------------------------------------------------------------------
+     */
+    //AbstractApplicationContext.obtainFreshBeanFactory
+
+    //AbstractRefreshableApplicationContext:
+    public final ConfigurableListableBeanFactory getBeanFactory() {
+        synchronized (this.beanFactoryMonitor) {
+            if (this.beanFactory == null) {
+                throw new IllegalStateException("BeanFactory not initialized or already closed - " +
+                        "call 'refresh' before accessing beans via the ApplicationContext");
+            }
+            //DefaultListableBeanFactory beanFactory
+            return this.beanFactory;
+        }
+    }
+
+    //AbstractApplicationContext:
+    //配置工厂的标准上下文特征，比如上下文的类加载器和后处理程序
+    protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+        //告诉内部bean工厂使用上下文的类装入器等
+        beanFactory.setBeanClassLoader(getClassLoader());
+        beanFactory.setBeanExpressionResolver(new StandardBeanExpressionResolver(beanFactory.getBeanClassLoader()));
+        //Set<PropertyEditorRegistrar> propertyEditorRegistrars = new LinkedHashSet<>(4)
+        beanFactory.addPropertyEditorRegistrar(new ResourceEditorRegistrar(this, getEnvironment()));
+
+        //使用上下文回调配置bean工厂
+        beanFactory.addBeanPostProcessor(new ApplicationContextAwareProcessor(this));
+        beanFactory.ignoreDependencyInterface(EnvironmentAware.class);
+        beanFactory.ignoreDependencyInterface(EmbeddedValueResolverAware.class);
+        beanFactory.ignoreDependencyInterface(ResourceLoaderAware.class);
+        beanFactory.ignoreDependencyInterface(ApplicationEventPublisherAware.class);
+        beanFactory.ignoreDependencyInterface(MessageSourceAware.class);
+        beanFactory.ignoreDependencyInterface(ApplicationContextAware.class);
+
+        //忽略给定的自动装配依赖接口,在普通工厂中BeanFactory接口作为用于解析的类型不注册
+        //MessageSource作为一个Bean注册
+        beanFactory.registerResolvableDependency(BeanFactory.class, beanFactory);
+        beanFactory.registerResolvableDependency(ResourceLoader.class, this);
+        beanFactory.registerResolvableDependency(ApplicationEventPublisher.class, this);
+        beanFactory.registerResolvableDependency(ApplicationContext.class, this);
+
+        // Register early post-processor for detecting inner beans as ApplicationListeners.
+        beanFactory.addBeanPostProcessor(new ApplicationListenerDetector(this));
+
+        // Detect a LoadTimeWeaver and prepare for weaving, if found.
+        if (beanFactory.containsBean(LOAD_TIME_WEAVER_BEAN_NAME)) {
+            beanFactory.addBeanPostProcessor(new LoadTimeWeaverAwareProcessor(beanFactory));
+            // Set a temporary ClassLoader for type matching.
+            beanFactory.setTempClassLoader(new ContextTypeMatchClassLoader(beanFactory.getBeanClassLoader()));
+        }
+
+        //注册默认环境bean
+        if (!beanFactory.containsLocalBean(ENVIRONMENT_BEAN_NAME)) {
+            //ENVIRONMENT_BEAN_NAME = "environment"
+            beanFactory.registerSingleton(ENVIRONMENT_BEAN_NAME, getEnvironment());
+        }
+        //SYSTEM_PROPERTIES_BEAN_NAME = "systemProperties"
+        if (!beanFactory.containsLocalBean(SYSTEM_PROPERTIES_BEAN_NAME)) {
+            beanFactory.registerSingleton(SYSTEM_PROPERTIES_BEAN_NAME, getEnvironment().getSystemProperties());
+        }
+        //SYSTEM_ENVIRONMENT_BEAN_NAME = "systemEnvironment"
+        if (!beanFactory.containsLocalBean(SYSTEM_ENVIRONMENT_BEAN_NAME)) {
+            beanFactory.registerSingleton(SYSTEM_ENVIRONMENT_BEAN_NAME, getEnvironment().getSystemEnvironment());
+        }
+    }
+
+    //AbstractBeanFactory:
+    public void addBeanPostProcessor(BeanPostProcessor beanPostProcessor) {
+        Assert.notNull(beanPostProcessor, "BeanPostProcessor must not be null");
+        // List<BeanPostProcessor> beanPostProcessors = new CopyOnWriteArrayList<>()
+        //移除老的BeanPostProcessor(如果有的话)
+        this.beanPostProcessors.remove(beanPostProcessor);
+        //跟踪它是否支持实例化/销毁
+        if (beanPostProcessor instanceof InstantiationAwareBeanPostProcessor) {
+            this.hasInstantiationAwareBeanPostProcessors = true;
+        }
+        if (beanPostProcessor instanceof DestructionAwareBeanPostProcessor) {
+            this.hasDestructionAwareBeanPostProcessors = true;
+        }
+        //重新添加到列表的尾部
+        this.beanPostProcessors.add(beanPostProcessor);
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    //忽略给定的自动装配依赖接口。这通常会被应用程序上下文用来注册
+    //以其他方式解析的依赖项，如BeanFactory.
+    //默认情况下，只有BeanFactoryAware接口被忽略。
+    //若要忽略其他类型，请为每个类型调用此方法
+    public void ignoreDependencyInterface(Class<?> ifc) {
+        //Set<Class<?>> ignoredDependencyInterfaces = new HashSet<>()
+        this.ignoredDependencyInterfaces.add(ifc);
+    }
+
+
+    //---------------------------------
+    //AbstractBeanFactory:
+    //在ApplicationContext初始化之后修改它的内部bean工厂。所有beanDefinition都已加载，但还没有实例化bean。
+    //允许在特定的ApplicationContext实现中注册特殊的beanpostprocessor。
+    protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+    }
+
+
+    //AbstractBeanFactory:
+    //实例化并调用所有已注册的BeanFactoryPostProcessor，如果设置了排序。必须在单例bean初始化之前调用。
+    protected void invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory beanFactory) {
+        PostProcessorRegistrationDelegate.invokeBeanFactoryPostProcessors(beanFactory, getBeanFactoryPostProcessors());
+
+        //检测LoadTimeWeaver并准备织入
+        if (beanFactory.getTempClassLoader() == null && beanFactory.containsBean(LOAD_TIME_WEAVER_BEAN_NAME)) {
+            beanFactory.addBeanPostProcessor(new LoadTimeWeaverAwareProcessor(beanFactory));
+            beanFactory.setTempClassLoader(new ContextTypeMatchClassLoader(beanFactory.getBeanClassLoader()));
+        }
+    }
+
+    //AbstractBeanFactory:
+    protected void registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory) {
+        PostProcessorRegistrationDelegate.registerBeanPostProcessors(beanFactory, this);
+    }
+
+    //PostProcessorRegistrationDelegate:
+    public static void registerBeanPostProcessors(
+            ConfigurableListableBeanFactory beanFactory, AbstractApplicationContext applicationContext) {
+
+        String[] postProcessorNames = beanFactory.getBeanNamesForType(BeanPostProcessor.class, true, false);
+
+        // 注册BeanPostProcessorChecker，当一个bean在BeanPostProcessor实例化过程中被创建时，
+        // 即当一个bean没有资格被所有BeanPostProcessor处理时，它记录一个信息消息。
+        int beanProcessorTargetCount = beanFactory.getBeanPostProcessorCount() + 1 + postProcessorNames.length;
+        beanFactory.addBeanPostProcessor(new PostProcessorRegistrationDelegate.BeanPostProcessorChecker(beanFactory, beanProcessorTargetCount));
+
+        //在实现priorityor、Ordered和其他操作的beanpostprocessor之间进行分离。
+        List<BeanPostProcessor> priorityOrderedPostProcessors = new ArrayList<>();
+        List<BeanPostProcessor> internalPostProcessors = new ArrayList<>();
+        List<String> orderedPostProcessorNames = new ArrayList<>();
+        List<String> nonOrderedPostProcessorNames = new ArrayList<>();
+        for (String ppName : postProcessorNames) {
+            if (beanFactory.isTypeMatch(ppName, PriorityOrdered.class)) {
+                BeanPostProcessor pp = beanFactory.getBean(ppName, BeanPostProcessor.class);
+                priorityOrderedPostProcessors.add(pp);
+                if (pp instanceof MergedBeanDefinitionPostProcessor) {
+                    internalPostProcessors.add(pp);
+                }
+            }else if (beanFactory.isTypeMatch(ppName, Ordered.class)) {
+                orderedPostProcessorNames.add(ppName);
+            }else {
+                nonOrderedPostProcessorNames.add(ppName);
+            }
+        }
+
+        // 首先，注册实现了PriorityOrdered的BeanPostProcessors
+        sortPostProcessors(priorityOrderedPostProcessors, beanFactory);
+        registerBeanPostProcessors(beanFactory, priorityOrderedPostProcessors);
+
+        //接下来，注册实现了Ordered的BeanPostProcessors
+        List<BeanPostProcessor> orderedPostProcessors = new ArrayList<>(orderedPostProcessorNames.size());
+        for (String ppName : orderedPostProcessorNames) {
+            BeanPostProcessor pp = beanFactory.getBean(ppName, BeanPostProcessor.class);
+            orderedPostProcessors.add(pp);
+            if (pp instanceof MergedBeanDefinitionPostProcessor) {
+                internalPostProcessors.add(pp);
+            }
+        }
+        sortPostProcessors(orderedPostProcessors, beanFactory);
+        registerBeanPostProcessors(beanFactory, orderedPostProcessors);
+
+        //现在，注册所有匹配的BeanPostProcessors
+        List<BeanPostProcessor> nonOrderedPostProcessors = new ArrayList<>(nonOrderedPostProcessorNames.size());
+        for (String ppName : nonOrderedPostProcessorNames) {
+            BeanPostProcessor pp = beanFactory.getBean(ppName, BeanPostProcessor.class);
+            nonOrderedPostProcessors.add(pp);
+            if (pp instanceof MergedBeanDefinitionPostProcessor) {
+                internalPostProcessors.add(pp);
+            }
+        }
+        registerBeanPostProcessors(beanFactory, nonOrderedPostProcessors);
+
+        //最后，重新注册所有内部的BeanPostProcessors
+        sortPostProcessors(internalPostProcessors, beanFactory);
+        registerBeanPostProcessors(beanFactory, internalPostProcessors);
+
+        //重新注册post-processor作为ApplicationListeners去探测内部的bean，移动它到链表尾
+        beanFactory.addBeanPostProcessor(new ApplicationListenerDetector(applicationContext));
+    }
+
+    //PostProcessorRegistrationDelegate:
+    private static void sortPostProcessors(List<?> postProcessors, ConfigurableListableBeanFactory beanFactory) {
+        Comparator<Object> comparatorToUse = null;
+        if (beanFactory instanceof DefaultListableBeanFactory) {
+            comparatorToUse = ((DefaultListableBeanFactory) beanFactory).getDependencyComparator();
+        }
+        if (comparatorToUse == null) {
+            comparatorToUse = OrderComparator.INSTANCE;
+        }
+        postProcessors.sort(comparatorToUse);
+    }
+
+    //PostProcessorRegistrationDelegate:
+    private static void registerBeanPostProcessors(
+            ConfigurableListableBeanFactory beanFactory, List<BeanPostProcessor> postProcessors) {
+
+        for (BeanPostProcessor postProcessor : postProcessors) {
+            beanFactory.addBeanPostProcessor(postProcessor);
+        }
+    }
+
+    //AbstractBeanFactory:
+    public void addBeanPostProcessor(BeanPostProcessor beanPostProcessor) {
+        Assert.notNull(beanPostProcessor, "BeanPostProcessor must not be null");
+        // Remove from old position, if any
+        this.beanPostProcessors.remove(beanPostProcessor);
+        // Track whether it is instantiation/destruction aware
+        if (beanPostProcessor instanceof InstantiationAwareBeanPostProcessor) {
+            this.hasInstantiationAwareBeanPostProcessors = true;
+        }
+        if (beanPostProcessor instanceof DestructionAwareBeanPostProcessor) {
+            this.hasDestructionAwareBeanPostProcessors = true;
+        }
+        // Add to end of list
+        this.beanPostProcessors.add(beanPostProcessor);
+    }
+
+    //------------------------------
+    //AbstractApplicationContext:
+    protected void initMessageSource() {
+        ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+        //MESSAGE_SOURCE_BEAN_NAME = "messageSource", BeanFactory里MessageSource bean的名字
+        if (beanFactory.containsLocalBean(MESSAGE_SOURCE_BEAN_NAME)) {
+            this.messageSource = beanFactory.getBean(MESSAGE_SOURCE_BEAN_NAME, MessageSource.class);
+            //使MessageSource知道父MessageSource
+            if (this.parent != null && this.messageSource instanceof HierarchicalMessageSource) {
+                HierarchicalMessageSource hms = (HierarchicalMessageSource) this.messageSource;
+                if (hms.getParentMessageSource() == null) {
+                    //如果父消息源没有注册，则只将父上下文设置为父消息源
+                    hms.setParentMessageSource(getInternalParentMessageSource());
+                }
+            }
+            if (logger.isTraceEnabled()) {
+                logger.trace("Using MessageSource [" + this.messageSource + "]");
+            }
+        }else {
+            //使用空的MessageSource来接受getMessage调用
+            //DelegatingMessageSource extends MessageSourceSupport implements HierarchicalMessageSource
+            DelegatingMessageSource dms = new DelegatingMessageSource();
+            dms.setParentMessageSource(getInternalParentMessageSource());
+            this.messageSource = dms;
+            //将MessageSource bean注册到BeanFactory
+            beanFactory.registerSingleton(MESSAGE_SOURCE_BEAN_NAME, this.messageSource);
+            if (logger.isTraceEnabled()) {
+                logger.trace("No '" + MESSAGE_SOURCE_BEAN_NAME + "' bean, using [" + this.messageSource + "]");
+            }
+        }
+    }
+
+    //-------------------------------
+    //AbstractApplicationContext:
+    protected void initApplicationEventMulticaster() {
+        ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+        //APPLICATION_EVENT_MULTICASTER_BEAN_NAME = "applicationEventMulticaster"
+        //如果ApplicationEventMulticaster在BeanFactory里已经存在，就直接用
+        if (beanFactory.containsLocalBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME)) {
+            this.applicationEventMulticaster =
+                    beanFactory.getBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME, ApplicationEventMulticaster.class);
+            if (logger.isTraceEnabled()) {
+                logger.trace("Using ApplicationEventMulticaster [" + this.applicationEventMulticaster + "]");
+            }
+        }else {
+            //如果不存在，就创建一个SimpleApplicationEventMulticaster，并注册到BeanFactory
+            this.applicationEventMulticaster = new SimpleApplicationEventMulticaster(beanFactory);
+            beanFactory.registerSingleton(APPLICATION_EVENT_MULTICASTER_BEAN_NAME, this.applicationEventMulticaster);
+            if (logger.isTraceEnabled()) {
+                logger.trace("No '" + APPLICATION_EVENT_MULTICASTER_BEAN_NAME + "' bean, using " +
+                        "[" + this.applicationEventMulticaster.getClass().getSimpleName() + "]");
+            }
+        }
+    }
+
+    //--------------------------
+    //AbstractApplicationContext:
+    //模板方法，可以覆盖该方法以添加自定义方法完成上下文的刷新工作。
+    //在单例实例化之前，在初始化特殊bean时调用。
+    protected void onRefresh() throws BeansException {
+        // For subclasses: do nothing by default.
+    }
+
+    //-----------------------------
+    //AbstractApplicationContext:
+    //添加一个实现了ApplicationListener的listener, 不影响其他监听器，
+    //可以在不添加bean的情况下添加
+    protected void registerListeners() {
+        //首先注册静态指定的侦听器
+        //Set<ApplicationListener<?>> applicationListeners = new LinkedHashSet<>()
+        for (ApplicationListener<?> listener : getApplicationListeners()) {
+            getApplicationEventMulticaster().addApplicationListener(listener);
+        }
+
+        // Do not initialize FactoryBeans here: We need to leave all regular beans
+        // uninitialized to let post-processors apply to them!
+        String[] listenerBeanNames = getBeanNamesForType(ApplicationListener.class, true, false);
+        for (String listenerBeanName : listenerBeanNames) {
+            getApplicationEventMulticaster().addApplicationListenerBean(listenerBeanName);
+        }
+
+        // Publish early application events now that we finally have a multicaster...
+        Set<ApplicationEvent> earlyEventsToProcess = this.earlyApplicationEvents;
+        this.earlyApplicationEvents = null;
+        if (earlyEventsToProcess != null) {
+            for (ApplicationEvent earlyEvent : earlyEventsToProcess) {
+                getApplicationEventMulticaster().multicastEvent(earlyEvent);
+            }
+        }
+    }
+
+    //AbstractApplicationContext:
+    ApplicationEventMulticaster getApplicationEventMulticaster() throws IllegalStateException {
+        // ApplicationEventMulticaster applicationEventMulticaster
+        if (this.applicationEventMulticaster == null) {
+            throw new IllegalStateException("ApplicationEventMulticaster not initialized - " +
+                    "call 'refresh' before multicasting events via the context: " + this);
+        }
+        return this.applicationEventMulticaster;
+    }
+
+    //AbstractApplicationEventMulticaster:
+    public void addApplicationListener(ApplicationListener<?> listener) {
+        synchronized (this.retrievalMutex) {
+            //如果已经注册，则显式删除代理的目标，以避免对同一侦听器的重复调用
+            Object singletonTarget = AopProxyUtils.getSingletonTarget(listener);
+            if (singletonTarget instanceof ApplicationListener) {
+                this.defaultRetriever.applicationListeners.remove(singletonTarget);
+            }
+            this.defaultRetriever.applicationListeners.add(listener);
+            this.retrieverCache.clear();
+        }
+    }
+
+    //AbstractApplicationContext：
+    public String[] getBeanNamesForType(@Nullable Class<?> type, boolean includeNonSingletons, boolean allowEagerInit) {
+        assertBeanFactoryActive();
+        return getBeanFactory().getBeanNamesForType(type, includeNonSingletons, allowEagerInit);
+    }
+
+    //DefaultListableBeanFactory：
+    public String[] getBeanNamesForType(@Nullable Class<?> type, boolean includeNonSingletons, boolean allowEagerInit) {
+        if (!isConfigurationFrozen() || type == null || !allowEagerInit) {
+            return doGetBeanNamesForType(ResolvableType.forRawClass(type), includeNonSingletons, allowEagerInit);
+        }
+        Map<Class<?>, String[]> cache =
+                (includeNonSingletons ? this.allBeanNamesByType : this.singletonBeanNamesByType);
+        String[] resolvedBeanNames = cache.get(type);
+        if (resolvedBeanNames != null) {
+            return resolvedBeanNames;
+        }
+        resolvedBeanNames = doGetBeanNamesForType(ResolvableType.forRawClass(type), includeNonSingletons, true);
+        if (ClassUtils.isCacheSafe(type, getBeanClassLoader())) {
+            cache.put(type, resolvedBeanNames);
+        }
+        return resolvedBeanNames;
+    }
+
+    //DefaultListableBeanFactory：
+    private String[] doGetBeanNamesForType(ResolvableType type, boolean includeNonSingletons, boolean allowEagerInit) {
+        List<String> result = new ArrayList<>();
+
+        // Check all bean definitions.
+        //List<String> beanDefinitionNames = new ArrayList<>(256)
+        for (String beanName : this.beanDefinitionNames) {
+            // Only consider bean as eligible if the bean name
+            // is not defined as alias for some other bean.
+            if (!isAlias(beanName)) {
+                try {
+                    RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
+                    // Only check bean definition if it is complete.
+                    if (!mbd.isAbstract() && (allowEagerInit ||
+                            (mbd.hasBeanClass() || !mbd.isLazyInit() || isAllowEagerClassLoading()) &&
+                                    !requiresEagerInitForType(mbd.getFactoryBeanName()))) {
+                        boolean isFactoryBean = isFactoryBean(beanName, mbd);
+                        BeanDefinitionHolder dbd = mbd.getDecoratedDefinition();
+                        boolean matchFound = false;
+                        boolean allowFactoryBeanInit = allowEagerInit || containsSingleton(beanName);
+                        boolean isNonLazyDecorated = dbd != null && !mbd.isLazyInit();
+                        if (!isFactoryBean) {
+                            if (includeNonSingletons || isSingleton(beanName, mbd, dbd)) {
+                                matchFound = isTypeMatch(beanName, type, allowFactoryBeanInit);
+                            }
+                        }else {
+                            if (includeNonSingletons || isNonLazyDecorated ||
+                                    (allowFactoryBeanInit && isSingleton(beanName, mbd, dbd))) {
+                                matchFound = isTypeMatch(beanName, type, allowFactoryBeanInit);
+                            }
+                            if (!matchFound) {
+                                // In case of FactoryBean, try to match FactoryBean instance itself next.
+                                beanName = FACTORY_BEAN_PREFIX + beanName;
+                                matchFound = isTypeMatch(beanName, type, allowFactoryBeanInit);
+                            }
+                        }
+                        if (matchFound) {
+                            result.add(beanName);
+                        }
+                    }
+                } catch (CannotLoadBeanClassException | BeanDefinitionStoreException ex) {
+                    if (allowEagerInit) {
+                        throw ex;
+                    }
+                    // Probably a placeholder: let's ignore it for type matching purposes.
+                    LogMessage message = (ex instanceof CannotLoadBeanClassException) ?
+                            LogMessage.format("Ignoring bean class loading failure for bean '%s'", beanName) :
+                            LogMessage.format("Ignoring unresolvable metadata in bean definition '%s'", beanName);
+                    logger.trace(message, ex);
+                    onSuppressedException(ex);
+                }
+            }
+        }
+
+        // Check manually registered singletons too.
+        //Set<String> manualSingletonNames = new LinkedHashSet<>(16)
+        for (String beanName : this.manualSingletonNames) {
+            try {
+                // In case of FactoryBean, match object created by FactoryBean.
+                if (isFactoryBean(beanName)) {
+                    if ((includeNonSingletons || isSingleton(beanName)) && isTypeMatch(beanName, type)) {
+                        result.add(beanName);
+                        // Match found for this bean: do not match FactoryBean itself anymore.
+                        continue;
+                    }
+                    // In case of FactoryBean, try to match FactoryBean itself next.
+                    beanName = FACTORY_BEAN_PREFIX + beanName;
+                }
+                // Match raw bean instance (might be raw FactoryBean).
+                if (isTypeMatch(beanName, type)) {
+                    result.add(beanName);
+                }
+            }catch (NoSuchBeanDefinitionException ex) {
+                // Shouldn't happen - probably a result of circular reference resolution...
+                logger.trace(LogMessage.format("Failed to check manually registered singleton with name '%s'", beanName), ex);
+            }
+        }
+        return StringUtils.toStringArray(result);
+    }
+
+
+
 
 }
