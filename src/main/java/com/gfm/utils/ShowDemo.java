@@ -1,9 +1,12 @@
 package com.gfm.utils;
 
 import com.sun.org.apache.xerces.internal.dom.DOMMessageFormatter;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.aop.framework.AopProxyUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.CachedIntrospectionResults;
 import org.springframework.beans.FatalBeanException;
 import org.springframework.beans.factory.*;
 import org.springframework.beans.factory.config.*;
@@ -13,14 +16,17 @@ import org.springframework.beans.factory.xml.*;
 import org.springframework.beans.support.ResourceEditorRegistrar;
 import org.springframework.context.*;
 import org.springframework.context.event.ApplicationEventMulticaster;
+import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.context.event.SimpleApplicationEventMulticaster;
 import org.springframework.context.expression.StandardBeanExpressionResolver;
 import org.springframework.context.support.*;
+import org.springframework.context.weaving.LoadTimeWeaverAware;
 import org.springframework.context.weaving.LoadTimeWeaverAwareProcessor;
-import org.springframework.core.OrderComparator;
-import org.springframework.core.Ordered;
-import org.springframework.core.PriorityOrdered;
-import org.springframework.core.ResolvableType;
+import org.springframework.core.*;
+import org.springframework.core.annotation.AnnotationTypeMappings;
+import org.springframework.core.annotation.AnnotationUtils;
+import org.springframework.core.annotation.AnnotationsScanner;
+import org.springframework.core.convert.ConversionService;
 import org.springframework.core.env.EnvironmentCapable;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.io.*;
@@ -40,12 +46,15 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.*;
 import org.xml.sax.ErrorHandler;
 
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.FactoryFinder;
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.management.ManagementFactory;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.net.MalformedURLException;
@@ -54,6 +63,7 @@ import java.security.AccessController;
 import java.security.PrivilegedExceptionAction;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -1932,7 +1942,9 @@ public class ShowDemo {
             if (singletonTarget instanceof ApplicationListener) {
                 this.defaultRetriever.applicationListeners.remove(singletonTarget);
             }
+            //Set<ApplicationListener<?>> applicationListeners = new LinkedHashSet<>()
             this.defaultRetriever.applicationListeners.add(listener);
+            //Map<ListenerCacheKey, ListenerRetriever> retrieverCache = new ConcurrentHashMap<>(64)
             this.retrieverCache.clear();
         }
     }
@@ -1965,7 +1977,7 @@ public class ShowDemo {
     private String[] doGetBeanNamesForType(ResolvableType type, boolean includeNonSingletons, boolean allowEagerInit) {
         List<String> result = new ArrayList<>();
 
-        // Check all bean definitions.
+        //校验所有的 bean definitions.
         //List<String> beanDefinitionNames = new ArrayList<>(256)
         for (String beanName : this.beanDefinitionNames) {
             // Only consider bean as eligible if the bean name
@@ -2042,6 +2054,386 @@ public class ShowDemo {
     }
 
 
+    //--------------------------------------------------
+    //AbstractApplicationContext:
+    protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
+        //为此上下文初始化转换服务
+        //CONVERSION_SERVICE_BEAN_NAME = "conversionService"
+        if (beanFactory.containsBean(CONVERSION_SERVICE_BEAN_NAME) &&
+                beanFactory.isTypeMatch(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class)) {
+            beanFactory.setConversionService(
+                    beanFactory.getBean(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class));
+        }
 
+        //如果以前没有任何bean后处理器(如PropertyPlaceholderConfigurer bean)注册，
+        //则注册一个默认的嵌入式值解析器:此时，主要用于解析注释属性值
+        if (!beanFactory.hasEmbeddedValueResolver()) {
+            beanFactory.addEmbeddedValueResolver(strVal -> getEnvironment().resolvePlaceholders(strVal));
+        }
+
+        //尽早初始化LoadTimeWeaverAware bean，以便尽早注册它们的转换器
+        String[] weaverAwareNames = beanFactory.getBeanNamesForType(LoadTimeWeaverAware.class, false, false);
+        for (String weaverAwareName : weaverAwareNames) {
+            getBean(weaverAwareName);
+        }
+
+        //停止使用临时类加载器进行类型匹配
+        beanFactory.setTempClassLoader(null);
+
+        //允许缓存所有的bean定义元数据，不希望未来发生更改
+        beanFactory.freezeConfiguration();
+
+        //实例化所有剩余的(非懒加载)单例
+        beanFactory.preInstantiateSingletons();
+    }
+
+    //DefaultListableBeanFactory:
+    public void freezeConfiguration() {
+        this.configurationFrozen = true;
+        this.frozenBeanDefinitionNames = StringUtils.toStringArray(this.beanDefinitionNames);
+    }
+
+
+    //----------------------------------
+    //AbstractApplicationContext:
+    protected void finishRefresh() {
+        //清除上下文级的资源缓存(例如扫描的ASM元数据)
+        clearResourceCaches();
+
+        //为此上下文初始化生命周期处理器
+        initLifecycleProcessor();
+
+        //首先将refresh传播到生命周期处理器
+        getLifecycleProcessor().onRefresh();
+
+        //发布最终事件
+        publishEvent(new ContextRefreshedEvent(this));
+
+        // Participate in LiveBeansView MBean, if active.
+        LiveBeansView.registerApplicationContext(this);
+    }
+
+    //DefaultResourceLoader:
+    public void clearResourceCaches() {
+        //Map<Class<?>, Map<Resource, ?>> resourceCaches = new ConcurrentHashMap<>(4)
+        this.resourceCaches.clear();
+    }
+
+    //AbstractApplicationContext:
+    protected void initLifecycleProcessor() {
+        ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+        //LIFECYCLE_PROCESSOR_BEAN_NAME = "lifecycleProcessor"
+        if (beanFactory.containsLocalBean(LIFECYCLE_PROCESSOR_BEAN_NAME)) {
+            this.lifecycleProcessor =
+                    beanFactory.getBean(LIFECYCLE_PROCESSOR_BEAN_NAME, LifecycleProcessor.class);
+            if (logger.isTraceEnabled()) {
+                logger.trace("Using LifecycleProcessor [" + this.lifecycleProcessor + "]");
+            }
+        }else {
+            DefaultLifecycleProcessor defaultProcessor = new DefaultLifecycleProcessor();
+            defaultProcessor.setBeanFactory(beanFactory);
+            this.lifecycleProcessor = defaultProcessor;
+            beanFactory.registerSingleton(LIFECYCLE_PROCESSOR_BEAN_NAME, this.lifecycleProcessor);
+            if (logger.isTraceEnabled()) {
+                logger.trace("No '" + LIFECYCLE_PROCESSOR_BEAN_NAME + "' bean, using " +
+                        "[" + this.lifecycleProcessor.getClass().getSimpleName() + "]");
+            }
+        }
+    }
+
+    //DefaultLifecycleProcessor:
+    public void onRefresh() {
+        startBeans(true);
+        this.running = true;
+    }
+
+    //DefaultLifecycleProcessor:
+    private void startBeans(boolean autoStartupOnly) {
+        //1>获取所有的生命周期bean
+        Map<String, Lifecycle> lifecycleBeans = getLifecycleBeans();
+        Map<Integer, DefaultLifecycleProcessor.LifecycleGroup> phases = new HashMap<>();
+        lifecycleBeans.forEach((beanName, bean) -> {
+            if (!autoStartupOnly || (bean instanceof SmartLifecycle && ((SmartLifecycle) bean).isAutoStartup())) {
+                int phase = getPhase(bean);
+                DefaultLifecycleProcessor.LifecycleGroup group = phases.get(phase);
+                if (group == null) {
+                    group = new DefaultLifecycleProcessor.LifecycleGroup(phase, this.timeoutPerShutdownPhase, lifecycleBeans, autoStartupOnly);
+                    phases.put(phase, group);
+                }
+                group.add(beanName, bean);
+            }
+        });
+        if (!phases.isEmpty()) {
+            List<Integer> keys = new ArrayList<>(phases.keySet());
+            Collections.sort(keys);
+            for (Integer key : keys) {
+                //2>启动生命周期阶段
+                phases.get(key).start();
+            }
+        }
+    }
+
+    //DefaultLifecycleProcessor:
+    protected Map<String, Lifecycle> getLifecycleBeans() {
+        ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+        Map<String, Lifecycle> beans = new LinkedHashMap<>();
+        String[] beanNames = beanFactory.getBeanNamesForType(Lifecycle.class, false, false);
+        for (String beanName : beanNames) {
+            String beanNameToRegister = BeanFactoryUtils.transformedBeanName(beanName);
+            boolean isFactoryBean = beanFactory.isFactoryBean(beanNameToRegister);
+            //FACTORY_BEAN_PREFIX = "&"
+            String beanNameToCheck = (isFactoryBean ? BeanFactory.FACTORY_BEAN_PREFIX + beanName : beanName);
+            if ((beanFactory.containsSingleton(beanNameToRegister) &&
+                    (!isFactoryBean || matchesBeanType(Lifecycle.class, beanNameToCheck, beanFactory))) ||
+                    matchesBeanType(SmartLifecycle.class, beanNameToCheck, beanFactory)) {
+                Object bean = beanFactory.getBean(beanNameToCheck);
+                if (bean != this && bean instanceof Lifecycle) {
+                    beans.put(beanNameToRegister, (Lifecycle) bean);
+                }
+            }
+        }
+        return beans;
+    }
+
+    //DefaultLifecycleProcessor:
+    public void start() {
+        if (this.members.isEmpty()) {
+            return;
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Starting beans in phase " + this.phase);
+        }
+        Collections.sort(this.members);
+        //List<LifecycleGroupMember> members = new ArrayList<>()
+        for (DefaultLifecycleProcessor.LifecycleGroupMember member : this.members) {
+            //开始启动
+            doStart(this.lifecycleBeans, member.name, this.autoStartupOnly);
+        }
+    }
+
+    //DefaultLifecycleProcessor:
+    //启动指定的bean作为给定的生命周期bean集合的一部分，确保首先启动它所依赖的任何bean
+    private void doStart(Map<String, ? extends Lifecycle> lifecycleBeans, String beanName, boolean autoStartupOnly) {
+        Lifecycle bean = lifecycleBeans.remove(beanName);
+        if (bean != null && bean != this) {
+            String[] dependenciesForBean = getBeanFactory().getDependenciesForBean(beanName);
+            for (String dependency : dependenciesForBean) {
+                doStart(lifecycleBeans, dependency, autoStartupOnly);
+            }
+            if (!bean.isRunning() &&
+                    (!autoStartupOnly || !(bean instanceof SmartLifecycle) || ((SmartLifecycle) bean).isAutoStartup())) {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Starting bean '" + beanName + "' of type [" + bean.getClass().getName() + "]");
+                }
+                try {
+                    bean.start();
+                }
+                catch (Throwable ex) {
+                    throw new ApplicationContextException("Failed to start bean '" + beanName + "'", ex);
+                }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Successfully started bean '" + beanName + "'");
+                }
+            }
+        }
+    }
+
+    //AbstractApplicationContext:
+    public void publishEvent(ApplicationEvent event) {
+        publishEvent(event, null);
+    }
+
+    //AbstractApplicationContext:
+    protected void publishEvent(Object event, @Nullable ResolvableType eventType) {
+        Assert.notNull(event, "Event must not be null");
+
+        //必要时将事件装饰为ApplicationEvent
+        ApplicationEvent applicationEvent;
+        if (event instanceof ApplicationEvent) {
+            applicationEvent = (ApplicationEvent) event;
+        }else {
+            applicationEvent = new PayloadApplicationEvent<>(this, event);
+            if (eventType == null) {
+                eventType = ((PayloadApplicationEvent<?>) applicationEvent).getResolvableType();
+            }
+        }
+
+        //如果可能的话，开始广播事件或者在初始化之后懒加载
+        if (this.earlyApplicationEvents != null) {
+            //Set<ApplicationEvent> earlyApplicationEvents
+            this.earlyApplicationEvents.add(applicationEvent);
+        } else {
+            //广播事件
+            getApplicationEventMulticaster().multicastEvent(applicationEvent, eventType);
+        }
+
+        //可以通过父上下文发布event
+        if (this.parent != null) {
+            if (this.parent instanceof AbstractApplicationContext) {
+                //递归调用广播Event的方法
+                ((AbstractApplicationContext) this.parent).publishEvent(event, eventType);
+            }else {
+                //递归调用广播Event的方法
+                this.parent.publishEvent(event);
+            }
+        }
+    }
+
+    //SimpleApplicationEventMulticaster:
+    public void multicastEvent(final ApplicationEvent event, @Nullable ResolvableType eventType) {
+        ResolvableType type = (eventType != null ? eventType : resolveDefaultEventType(event));
+        //用一个线程池去启动事件监听器
+        Executor executor = getTaskExecutor();
+        for (ApplicationListener<?> listener : getApplicationListeners(event, type)) {
+            //启动实现了ApplicationListener接口的监听器Listener
+            if (executor != null) {
+                executor.execute(() -> invokeListener(listener, event));
+            }else {
+                invokeListener(listener, event);
+            }
+        }
+    }
+
+    //SimpleApplicationEventMulticaster:
+    protected void invokeListener(ApplicationListener<?> listener, ApplicationEvent event) {
+        org.springframework.util.ErrorHandler errorHandler = getErrorHandler();
+        if (errorHandler != null) {
+            try {
+                doInvokeListener(listener, event);
+            }catch (Throwable err) {
+                errorHandler.handleError(err);
+            }
+        }else {
+            doInvokeListener(listener, event);
+        }
+    }
+
+    //SimpleApplicationEventMulticaster:
+    private void doInvokeListener(ApplicationListener listener, ApplicationEvent event) {
+        try {
+            //这是个接口方法，处理注册的监听器Listener，
+            //自定义的Listener实现接口ApplicationListener，覆盖此方法
+            listener.onApplicationEvent(event);
+        }catch (ClassCastException ex) {
+            String msg = ex.getMessage();
+            if (msg == null || matchesClassCastMessage(msg, event.getClass())) {
+                Log logger = LogFactory.getLog(getClass());
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Non-matching event type for listener: " + listener, ex);
+                }
+            } else {
+                throw ex;
+            }
+        }
+    }
+
+
+    //LiveBeansView:
+    static void registerApplicationContext(ConfigurableApplicationContext applicationContext) {
+        //MBEAN_DOMAIN_PROPERTY_NAME = "spring.liveBeansView.mbeanDomain"
+        String mbeanDomain = applicationContext.getEnvironment().getProperty(MBEAN_DOMAIN_PROPERTY_NAME);
+        if (mbeanDomain != null) {
+            //Set<ConfigurableApplicationContext> applicationContexts = new LinkedHashSet<>()
+            synchronized (applicationContexts) {
+                if (applicationContexts.isEmpty()) {
+                    try {
+                        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+                        applicationName = applicationContext.getApplicationName();
+                        server.registerMBean(new LiveBeansView(),
+                                new ObjectName(mbeanDomain, MBEAN_APPLICATION_KEY, applicationName));
+                    }catch (Throwable ex) {
+                        throw new ApplicationContextException("Failed to register LiveBeansView MBean", ex);
+                    }
+                }
+                applicationContexts.add(applicationContext);
+            }
+        }
+    }
+
+
+    //--------------------------------------------------------
+
+    //AbstractApplicationContext:
+    protected void resetCommonCaches() {
+        ReflectionUtils.clearCache();
+        AnnotationUtils.clearCache();
+        ResolvableType.clearCache();
+        CachedIntrospectionResults.clearClassLoader(getClassLoader());
+    }
+
+    //ReflectionUtils:
+    public static void clearCache() {
+        // Map<Class<?>, Method[]> declaredMethodsCache = new ConcurrentReferenceHashMap<>(256)
+        declaredMethodsCache.clear();
+        //Map<Class<?>, Field[]> declaredFieldsCache = new ConcurrentReferenceHashMap<>(256)
+        declaredFieldsCache.clear();
+    }
+
+    //AnnotationUtils:
+    public static void clearCache() {
+        //1>清除注解类型映射缓存
+        AnnotationTypeMappings.clearCache();
+        //2>清除注解扫描
+        AnnotationsScanner.clearCache();
+    }
+
+    //AnnotationTypeMappings:
+    static void clearCache() {
+        //Map<AnnotationFilter, Cache> standardRepeatablesCache = new ConcurrentReferenceHashMap<>()
+        standardRepeatablesCache.clear();
+        //Map<AnnotationFilter, Cache> noRepeatablesCache = new ConcurrentReferenceHashMap<>()
+        noRepeatablesCache.clear();
+    }
+
+    //AnnotationsScanner:
+    static void clearCache() {
+        //Map<AnnotatedElement, Annotation[]> declaredAnnotationCache =
+        //                              new ConcurrentReferenceHashMap<>(256)
+        declaredAnnotationCache.clear();
+        //Map<Class<?>, Method[]> baseTypeMethodsCache =
+        //			          new ConcurrentReferenceHashMap<>(256)
+        baseTypeMethodsCache.clear();
+    }
+
+    //ResolvableType:
+    public static void clearCache() {
+        //ConcurrentReferenceHashMap<ResolvableType, ResolvableType> cache =
+        //			      new ConcurrentReferenceHashMap<>(256)
+        cache.clear();
+        //ConcurrentReferenceHashMap<Type, Type> cache = new ConcurrentReferenceHashMap<>(256)
+        SerializableTypeWrapper.cache.clear();
+    }
+
+    //CachedIntrospectionResults:
+    //清除给定类装入器的默认缓存，删除该类装入器下的所有类的默认结果，并从接受列表中删除类装入器(及其子类)
+    public static void clearClassLoader(@Nullable ClassLoader classLoader) {
+        //Set<ClassLoader> acceptedClassLoaders = Collections.newSetFromMap(new ConcurrentHashMap<>(16))
+        acceptedClassLoaders.removeIf(registeredLoader ->
+                isUnderneathClassLoader(registeredLoader, classLoader));
+        //ConcurrentMap<Class<?>, CachedIntrospectionResults> strongClassCache = new ConcurrentHashMap<>(64)
+        strongClassCache.keySet().removeIf(beanClass ->
+                isUnderneathClassLoader(beanClass.getClassLoader(), classLoader));
+        //ConcurrentMap<Class<?>, CachedIntrospectionResults> softClassCache = new ConcurrentReferenceHashMap<>(64)
+        softClassCache.keySet().removeIf(beanClass ->
+                isUnderneathClassLoader(beanClass.getClassLoader(), classLoader));
+    }
+
+    //CachedIntrospectionResults:
+    private static boolean isUnderneathClassLoader(@Nullable ClassLoader candidate, @Nullable ClassLoader parent) {
+        if (candidate == parent) {
+            return true;
+        }
+        if (candidate == null) {
+            return false;
+        }
+        ClassLoader classLoaderToCheck = candidate;
+        while (classLoaderToCheck != null) {
+            classLoaderToCheck = classLoaderToCheck.getParent();
+            if (classLoaderToCheck == parent) {
+                return true;
+            }
+        }
+        return false;
+    }
 
 }
