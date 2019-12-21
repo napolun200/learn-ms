@@ -3,22 +3,33 @@ package com.gfm.utils;
 import com.gfm.service.UserService;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.*;
-import org.springframework.beans.factory.config.BeanDefinition;
-import org.springframework.beans.factory.config.BeanDefinitionHolder;
-import org.springframework.beans.factory.config.ConfigurableBeanFactory;
-import org.springframework.beans.factory.config.NamedBeanHolder;
+import org.springframework.beans.factory.config.*;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.beans.factory.support.NullBean;
 import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.expression.*;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
+import org.springframework.core.DecoratingClassLoader;
 import org.springframework.core.ResolvableType;
+import org.springframework.core.convert.ConversionService;
 import org.springframework.core.log.LogMessage;
+import org.springframework.expression.Expression;
+import org.springframework.expression.ParseException;
+import org.springframework.expression.ParserContext;
+import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.expression.spel.support.StandardTypeConverter;
+import org.springframework.expression.spel.support.StandardTypeLocator;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
+import org.springframework.util.ObjectUtils;
 import org.springframework.util.StringUtils;
 
+import java.lang.reflect.Array;
+import java.security.AccessController;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -231,10 +242,11 @@ public class BeanInstanceDemo {
             if (!isAlias(beanName)) { //不是其他bean的别名
                 try {
                     RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
-                    // Only check bean definition if it is complete.
+                    //只有在bean定义完成时才检查它
                     if (!mbd.isAbstract() && (allowEagerInit ||
                             (mbd.hasBeanClass() || !mbd.isLazyInit() || isAllowEagerClassLoading()) &&
                                     !requiresEagerInitForType(mbd.getFactoryBeanName()))) {
+                        //判断是否是FactoryBean
                         boolean isFactoryBean = isFactoryBean(beanName, mbd);
                         BeanDefinitionHolder dbd = mbd.getDecoratedDefinition();
                         boolean matchFound = false;
@@ -336,8 +348,9 @@ public class BeanInstanceDemo {
             RootBeanDefinition mbd = null;
             RootBeanDefinition previous = null;
 
-            // Check with full lock now in order to enforce the same merged instance.
+            //现在使用full lock进行检查，以执行相同的合并实例
             if (containingBd == null) {
+                //Map<String, RootBeanDefinition> mergedBeanDefinitions = new ConcurrentHashMap<>(256)
                 mbd = this.mergedBeanDefinitions.get(beanName);
             }
 
@@ -345,59 +358,54 @@ public class BeanInstanceDemo {
                 previous = mbd;
                 mbd = null;
                 if (bd.getParentName() == null) {
-                    // Use copy of given root bean definition.
+                    //使用给定 根bean定义 的副本
                     if (bd instanceof RootBeanDefinition) {
                         mbd = ((RootBeanDefinition) bd).cloneBeanDefinition();
-                    }
-                    else {
+                    }else {
                         mbd = new RootBeanDefinition(bd);
                     }
-                }
-                else {
-                    // Child bean definition: needs to be merged with parent.
+                }else {
+                    //子bean定义:需要与父bean合并
                     BeanDefinition pbd;
                     try {
+                        //获取规范的beanName
                         String parentBeanName = transformedBeanName(bd.getParentName());
                         if (!beanName.equals(parentBeanName)) {
                             pbd = getMergedBeanDefinition(parentBeanName);
-                        }
-                        else {
+                        }else {
+                            //获取父的beanFactory
                             BeanFactory parent = getParentBeanFactory();
                             if (parent instanceof ConfigurableBeanFactory) {
                                 pbd = ((ConfigurableBeanFactory) parent).getMergedBeanDefinition(parentBeanName);
-                            }
-                            else {
+                            }else {
                                 throw new NoSuchBeanDefinitionException(parentBeanName,
                                         "Parent name '" + parentBeanName + "' is equal to bean name '" + beanName +
                                                 "': cannot be resolved without an AbstractBeanFactory parent");
                             }
                         }
-                    }
-                    catch (NoSuchBeanDefinitionException ex) {
+                    }catch (NoSuchBeanDefinitionException ex) {
                         throw new BeanDefinitionStoreException(bd.getResourceDescription(), beanName,
                                 "Could not resolve parent bean definition '" + bd.getParentName() + "'", ex);
                     }
-                    // Deep copy with overridden values.
+                    //深拷贝覆盖已有的值
                     mbd = new RootBeanDefinition(pbd);
                     mbd.overrideFrom(bd);
                 }
 
-                // Set default singleton scope, if not configured before.
+                //设置默认的单例范围，如果之前没有配置
                 if (!StringUtils.hasLength(mbd.getScope())) {
                     mbd.setScope(RootBeanDefinition.SCOPE_SINGLETON);
                 }
 
-                // A bean contained in a non-singleton bean cannot be a singleton itself.
-                // Let's correct this on the fly here, since this might be the result of
-                // parent-child merging for the outer bean, in which case the original inner bean
-                // definition will not have inherited the merged outer bean's singleton status.
+                //非单例bean中包含的bean本身不能是单例的。让我们在这里动态地修正一下，因为这可能是外部bean的父-子合并的结果，
+                //在这种情况下，原始的内部bean定义将不会继承合并后的外部bean的单例状态。
                 if (containingBd != null && !containingBd.isSingleton() && mbd.isSingleton()) {
                     mbd.setScope(containingBd.getScope());
                 }
 
-                // Cache the merged bean definition for the time being
-                // (it might still get re-merged later on in order to pick up metadata changes)
+                //暂时缓存合并的bean定义(为了获取元数据的更改，它可能在以后重新合并)
                 if (containingBd == null && isCacheBeanMetadata()) {
+                    //Map<String, RootBeanDefinition> mergedBeanDefinitions = new ConcurrentHashMap<>(256)
                     this.mergedBeanDefinitions.put(beanName, mbd);
                 }
             }
@@ -405,6 +413,287 @@ public class BeanInstanceDemo {
                 copyRelevantMergedBeanDefinitionCaches(previous, mbd);
             }
             return mbd;
+        }
+    }
+
+    //AbstractBeanFactory:
+    protected String transformedBeanName(String name) {
+        return canonicalName(BeanFactoryUtils.transformedBeanName(name));
+    }
+
+    //SimpleAliasRegistry:
+    //将别名转换成符合规范的beanName
+    public String canonicalName(String name) {
+        String canonicalName = name;
+        // Handle aliasing...
+        String resolvedName;
+        do {
+            resolvedName = this.aliasMap.get(canonicalName);
+            if (resolvedName != null) {
+                canonicalName = resolvedName;
+            }
+        }
+        while (resolvedName != null);
+        return canonicalName;
+    }
+
+    //AbstractBeanFactory:
+    private void copyRelevantMergedBeanDefinitionCaches(RootBeanDefinition previous, RootBeanDefinition mbd) {
+        if (ObjectUtils.nullSafeEquals(mbd.getBeanClassName(), previous.getBeanClassName()) &&
+                ObjectUtils.nullSafeEquals(mbd.getFactoryBeanName(), previous.getFactoryBeanName()) &&
+                ObjectUtils.nullSafeEquals(mbd.getFactoryMethodName(), previous.getFactoryMethodName())) {
+            ResolvableType targetType = mbd.targetType;
+            ResolvableType previousTargetType = previous.targetType;
+            if (targetType == null || targetType.equals(previousTargetType)) {
+                mbd.targetType = previousTargetType;
+                mbd.isFactoryBean = previous.isFactoryBean;
+                mbd.resolvedTargetType = previous.resolvedTargetType;
+                mbd.factoryMethodReturnType = previous.factoryMethodReturnType;
+                mbd.factoryMethodToIntrospect = previous.factoryMethodToIntrospect;
+            }
+        }
+    }
+
+    //DefaultListableBeanFactory:
+    protected boolean isFactoryBean(String beanName, RootBeanDefinition mbd) {
+        Boolean result = mbd.isFactoryBean;
+        if (result == null) {
+            //判定
+            Class<?> beanType = predictBeanType(beanName, mbd, FactoryBean.class);
+            result = (beanType != null && FactoryBean.class.isAssignableFrom(beanType));
+            mbd.isFactoryBean = result;
+        }
+        return result;
+    }
+
+    //AbstractBeanFactory:
+    protected Class<?> predictBeanType(String beanName, RootBeanDefinition mbd, Class<?>... typesToMatch) {
+        Class<?> targetType = mbd.getTargetType();
+        if (targetType != null) {
+            return targetType;
+        }
+        if (mbd.getFactoryMethodName() != null) {
+            return null;
+        }
+        return resolveBeanClass(mbd, beanName, typesToMatch);
+    }
+
+    //AbstractBeanFactory:
+    //为指定的bean定义解析bean类，将bean类名解析为一个类引用(如果需要)，并将解析后的类存储在bean定义中以供进一步使用
+    protected Class<?> resolveBeanClass(final RootBeanDefinition mbd, String beanName, final Class<?>... typesToMatch)
+            throws CannotLoadBeanClassException {
+
+        try {
+            if (mbd.hasBeanClass()) {
+                return mbd.getBeanClass();
+            }
+            if (System.getSecurityManager() != null) {
+                return AccessController.doPrivileged((PrivilegedExceptionAction<Class<?>>) () ->
+                        doResolveBeanClass(mbd, typesToMatch), getAccessControlContext());
+            }else {
+                return doResolveBeanClass(mbd, typesToMatch);
+            }
+        }catch (PrivilegedActionException pae) {
+            ClassNotFoundException ex = (ClassNotFoundException) pae.getException();
+            throw new CannotLoadBeanClassException(mbd.getResourceDescription(), beanName, mbd.getBeanClassName(), ex);
+        }catch (ClassNotFoundException ex) {
+            throw new CannotLoadBeanClassException(mbd.getResourceDescription(), beanName, mbd.getBeanClassName(), ex);
+        }catch (LinkageError err) {
+            throw new CannotLoadBeanClassException(mbd.getResourceDescription(), beanName, mbd.getBeanClassName(), err);
+        }
+    }
+
+    //AbstractBeanFactory:
+    private Class<?> doResolveBeanClass(RootBeanDefinition mbd, Class<?>... typesToMatch)
+            throws ClassNotFoundException {
+
+        ClassLoader beanClassLoader = getBeanClassLoader();
+        ClassLoader dynamicLoader = beanClassLoader;
+        boolean freshResolve = false;
+
+        if (!ObjectUtils.isEmpty(typesToMatch)) {
+            //当只是执行类型检查时(例如，还没有创建实际的实例)，使用指定的临时类装入器(例如，在织入场景中)
+            ClassLoader tempClassLoader = getTempClassLoader();
+            if (tempClassLoader != null) {
+                dynamicLoader = tempClassLoader;
+                freshResolve = true;
+                if (tempClassLoader instanceof DecoratingClassLoader) {
+                    DecoratingClassLoader dcl = (DecoratingClassLoader) tempClassLoader;
+                    for (Class<?> typeToMatch : typesToMatch) {
+                        dcl.excludeClass(typeToMatch.getName());
+                    }
+                }
+            }
+        }
+
+        String className = mbd.getBeanClassName();
+        if (className != null) {
+            //计算bean定义中包含的给定字符串，可能将其解析为表达式
+            Object evaluated = evaluateBeanDefinitionString(className, mbd);
+            if (!className.equals(evaluated)) {
+                // A dynamically resolved expression, supported as of 4.2...
+                if (evaluated instanceof Class) {
+                    return (Class<?>) evaluated;
+                }
+                else if (evaluated instanceof String) {
+                    className = (String) evaluated;
+                    freshResolve = true;
+                }
+                else {
+                    throw new IllegalStateException("Invalid class name expression result: " + evaluated);
+                }
+            }
+
+            if (freshResolve) {
+                //在针对临时类装入器进行解析时，请尽早退出，以避免将解析后的类存储在bean定义中
+                if (dynamicLoader != null) {
+                    try {
+                        return dynamicLoader.loadClass(className);
+                    }catch (ClassNotFoundException ex) {
+                        if (logger.isTraceEnabled()) {
+                            logger.trace("Could not load class [" + className + "] from " + dynamicLoader + ": " + ex);
+                        }
+                    }
+                }
+                return ClassUtils.forName(className, dynamicLoader);
+            }
+        }
+
+        //定期解析，将结果缓存到bean定义中
+        return mbd.resolveBeanClass(beanClassLoader);
+    }
+
+    //AbstractBeanFactory:
+    protected Object evaluateBeanDefinitionString(@Nullable String value, @Nullable BeanDefinition beanDefinition) {
+        if (this.beanExpressionResolver == null) {
+            return value;
+        }
+
+        Scope scope = null;
+        if (beanDefinition != null) {
+            String scopeName = beanDefinition.getScope();
+            if (scopeName != null) {
+                scope = getRegisteredScope(scopeName);
+            }
+        }
+        //解析的字符串是个表达式，用bean表达式处理器进行评估
+        return this.beanExpressionResolver.evaluate(value, new BeanExpressionContext(this, scope));
+    }
+
+    //StandardBeanExpressionResolver:
+    public Object evaluate(@Nullable String value, BeanExpressionContext evalContext) throws BeansException {
+        if (!StringUtils.hasLength(value)) {
+            return value;
+        }
+        try {
+            // Map<String, Expression> expressionCache = new ConcurrentHashMap<>(256)
+            Expression expr = this.expressionCache.get(value);
+            if (expr == null) {
+                //解析表达式字符串
+                expr = this.expressionParser.parseExpression(value, this.beanExpressionParserContext);
+                this.expressionCache.put(value, expr);
+            }
+            //Map<BeanExpressionContext, StandardEvaluationContext> evaluationCache = new ConcurrentHashMap<>(8)
+            StandardEvaluationContext sec = this.evaluationCache.get(evalContext);
+            if (sec == null) {
+                sec = new StandardEvaluationContext(evalContext);
+                sec.addPropertyAccessor(new BeanExpressionContextAccessor());
+                sec.addPropertyAccessor(new BeanFactoryAccessor());
+                sec.addPropertyAccessor(new MapAccessor());
+                sec.addPropertyAccessor(new EnvironmentAccessor());
+                sec.setBeanResolver(new BeanFactoryResolver(evalContext.getBeanFactory()));
+                sec.setTypeLocator(new StandardTypeLocator(evalContext.getBeanFactory().getBeanClassLoader()));
+                ConversionService conversionService = evalContext.getBeanFactory().getConversionService();
+                if (conversionService != null) {
+                    sec.setTypeConverter(new StandardTypeConverter(conversionService));
+                }
+                customizeEvaluationContext(sec);
+                this.evaluationCache.put(evalContext, sec);
+            }
+            return expr.getValue(sec);
+        }
+        catch (Throwable ex) {
+            throw new BeanExpressionException("Expression parsing failed", ex);
+        }
+    }
+
+    //TemplateAwareExpressionParser:
+    public Expression parseExpression(String expressionString, @Nullable ParserContext context) throws ParseException {
+        if (context != null && context.isTemplate()) {
+            return parseTemplate(expressionString, context);
+        }
+        else {
+            return doParseExpression(expressionString, context);
+        }
+    }
+
+    //AbstractBeanDefinition:
+    public Class<?> resolveBeanClass(@Nullable ClassLoader classLoader) throws ClassNotFoundException {
+        String className = getBeanClassName();
+        if (className == null) {
+            return null;
+        }
+        //用类加载器加载类对象，初始化给定的类
+        Class<?> resolvedClass = ClassUtils.forName(className, classLoader);
+        this.beanClass = resolvedClass;
+        return resolvedClass;
+    }
+
+    //ClassUtils:
+    public static Class<?> forName(String name, @Nullable ClassLoader classLoader)
+            throws ClassNotFoundException, LinkageError {
+
+        Assert.notNull(name, "Name must not be null");
+
+        Class<?> clazz = resolvePrimitiveClassName(name);
+        if (clazz == null) {
+            clazz = commonClassCache.get(name);
+        }
+        if (clazz != null) {
+            return clazz;
+        }
+
+        // "java.lang.String[]" style arrays
+        if (name.endsWith(ARRAY_SUFFIX)) {
+            String elementClassName = name.substring(0, name.length() - ARRAY_SUFFIX.length());
+            Class<?> elementClass = forName(elementClassName, classLoader);
+            return Array.newInstance(elementClass, 0).getClass();
+        }
+
+        // "[Ljava.lang.String;" style arrays
+        if (name.startsWith(NON_PRIMITIVE_ARRAY_PREFIX) && name.endsWith(";")) {
+            String elementName = name.substring(NON_PRIMITIVE_ARRAY_PREFIX.length(), name.length() - 1);
+            Class<?> elementClass = forName(elementName, classLoader);
+            return Array.newInstance(elementClass, 0).getClass();
+        }
+
+        // "[[I" or "[[Ljava.lang.String;" style arrays
+        if (name.startsWith(INTERNAL_ARRAY_PREFIX)) {
+            String elementName = name.substring(INTERNAL_ARRAY_PREFIX.length());
+            Class<?> elementClass = forName(elementName, classLoader);
+            return Array.newInstance(elementClass, 0).getClass();
+        }
+
+        ClassLoader clToUse = classLoader;
+        if (clToUse == null) {
+            clToUse = getDefaultClassLoader();
+        }
+        try {
+            return Class.forName(name, false, clToUse);
+        }
+        catch (ClassNotFoundException ex) {
+            int lastDotIndex = name.lastIndexOf(PACKAGE_SEPARATOR);
+            if (lastDotIndex != -1) {
+                String innerClassName =
+                        name.substring(0, lastDotIndex) + INNER_CLASS_SEPARATOR + name.substring(lastDotIndex + 1);
+                try {
+                    return Class.forName(innerClassName, false, clToUse);
+                }
+                catch (ClassNotFoundException ex2) {
+                    // Swallow - let original exception get through
+                }
+            }
+            throw ex;
         }
     }
 
