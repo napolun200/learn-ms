@@ -6,11 +6,14 @@ import org.springframework.beans.factory.*;
 import org.springframework.beans.factory.config.*;
 import org.springframework.beans.factory.support.*;
 import org.springframework.beans.propertyeditors.*;
+import org.springframework.cglib.proxy.Callback;
+import org.springframework.cglib.proxy.Factory;
+import org.springframework.cglib.proxy.NoOp;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.expression.*;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
 import org.springframework.core.*;
-import org.springframework.core.convert.ConversionService;
+import org.springframework.core.convert.*;
 import org.springframework.core.io.ContextResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceEditor;
@@ -30,6 +33,7 @@ import org.xml.sax.InputSource;
 
 import javax.naming.NameNotFoundException;
 import javax.naming.NamingException;
+import java.beans.PropertyDescriptor;
 import java.beans.PropertyEditor;
 import java.io.File;
 import java.io.InputStream;
@@ -38,12 +42,10 @@ import java.lang.reflect.*;
 import java.net.URI;
 import java.net.URL;
 import java.nio.file.Path;
-import java.security.AccessControlContext;
-import java.security.AccessController;
-import java.security.PrivilegedActionException;
-import java.security.PrivilegedExceptionAction;
+import java.security.*;
 import java.util.*;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 public class BeanInstanceDemo {
 
@@ -2032,8 +2034,7 @@ public class BeanInstanceDemo {
         }
 
         if (factoryMethodToUse == null || argsToUse == null) {
-            // Need to determine the factory method...
-            // Try all methods with this name to see if they match the given arguments.
+            //需要确定工厂方，尝试使用此名称的所有方法，看看它们是否与给定的参数匹配。
             factoryClass = ClassUtils.getUserClass(factoryClass);
 
             List<Method> candidateList = null;
@@ -2064,6 +2065,7 @@ public class BeanInstanceDemo {
                         mbd.constructorArgumentsResolved = true;
                         mbd.resolvedConstructorArguments = EMPTY_ARGS;
                     }
+                    //实例化bean
                     bw.setBeanInstance(instantiate(beanName, mbd, factoryBean, uniqueCandidate, EMPTY_ARGS));
                     return bw;
                 }
@@ -2082,14 +2084,14 @@ public class BeanInstanceDemo {
                 minNrOfArgs = explicitArgs.length;
             }
             else {
-                // We don't have arguments passed in programmatically, so we need to resolve the
-                // arguments specified in the constructor arguments held in the bean definition.
+                //我们没有以编程方式传递参数，因此需要解析bean定义中构造函数参数中指定的参数
                 if (mbd.hasConstructorArgumentValues()) {
                     ConstructorArgumentValues cargs = mbd.getConstructorArgumentValues();
                     resolvedValues = new ConstructorArgumentValues();
+                    //将此bean的构造函数参数解析为resolvedValues对象。这可能涉及到查找其他bean。
+                    //此方法还用于处理静态工厂方法的调用
                     minNrOfArgs = resolveConstructorArguments(beanName, mbd, bw, cargs, resolvedValues);
-                }
-                else {
+                }else {
                     minNrOfArgs = 0;
                 }
             }
@@ -2103,28 +2105,27 @@ public class BeanInstanceDemo {
                     ConstructorResolver.ArgumentsHolder argsHolder;
 
                     if (explicitArgs != null) {
-                        // Explicit arguments given -> arguments length must match exactly.
+                        //给定的显式参数->参数长度必须精确匹配
                         if (paramTypes.length != explicitArgs.length) {
                             continue;
                         }
                         argsHolder = new ConstructorResolver.ArgumentsHolder(explicitArgs);
-                    }
-                    else {
-                        // Resolved constructor arguments: type conversion and/or autowiring necessary.
+                    }else {
+                        //解析构造函数参数:类型转换和或必要的自动装配
                         try {
                             String[] paramNames = null;
                             ParameterNameDiscoverer pnd = this.beanFactory.getParameterNameDiscoverer();
                             if (pnd != null) {
                                 paramNames = pnd.getParameterNames(candidate);
                             }
+                            //给定已解析的构造函数参数值，创建参数数组来调用构造函数或工厂方法
                             argsHolder = createArgumentArray(beanName, mbd, resolvedValues, bw,
                                     paramTypes, paramNames, candidate, autowiring, candidates.length == 1);
-                        }
-                        catch (UnsatisfiedDependencyException ex) {
+                        }catch (UnsatisfiedDependencyException ex) {
                             if (logger.isTraceEnabled()) {
                                 logger.trace("Ignoring factory method [" + candidate + "] of bean '" + beanName + "': " + ex);
                             }
-                            // Swallow and try next overloaded factory method.
+                            //吞下并尝试下一个重载工厂方法
                             if (causes == null) {
                                 causes = new LinkedList<>();
                             }
@@ -2135,7 +2136,7 @@ public class BeanInstanceDemo {
 
                     int typeDiffWeight = (mbd.isLenientConstructorResolution() ?
                             argsHolder.getTypeDifferenceWeight(paramTypes) : argsHolder.getAssignabilityWeight(paramTypes));
-                    // Choose this factory method if it represents the closest match.
+                    //如果它表示最接近的匹配，则选择此工厂方法
                     if (typeDiffWeight < minTypeDiffWeight) {
                         factoryMethodToUse = candidate;
                         argsHolderToUse = argsHolder;
@@ -2143,11 +2144,8 @@ public class BeanInstanceDemo {
                         minTypeDiffWeight = typeDiffWeight;
                         ambiguousFactoryMethods = null;
                     }
-                    // Find out about ambiguity: In case of the same type difference weight
-                    // for methods with the same number of parameters, collect such candidates
-                    // and eventually raise an ambiguity exception.
-                    // However, only perform that check in non-lenient constructor resolution mode,
-                    // and explicitly ignore overridden methods (with the same parameter signature).
+                    //找出歧义:如果具有相同参数数量的方法具有相同的类型差异权重，则收集这些候选对象并最终引发歧义异常。但是，只在非宽
+                    //松构造函数解析模式下执行检查，并显式地忽略覆盖的方法(具有相同的参数签名)
                     else if (factoryMethodToUse != null && typeDiffWeight == minTypeDiffWeight &&
                             !mbd.isLenientConstructorResolution() &&
                             paramTypes.length == factoryMethodToUse.getParameterCount() &&
@@ -2174,8 +2172,7 @@ public class BeanInstanceDemo {
                     for (Object arg : explicitArgs) {
                         argTypes.add(arg != null ? arg.getClass().getSimpleName() : "null");
                     }
-                }
-                else if (resolvedValues != null) {
+                }else if (resolvedValues != null) {
                     Set<ValueHolder> valueHolders = new LinkedHashSet<>(resolvedValues.getArgumentCount());
                     valueHolders.addAll(resolvedValues.getIndexedArgumentValues().values());
                     valueHolders.addAll(resolvedValues.getGenericArgumentValues());
@@ -2195,13 +2192,11 @@ public class BeanInstanceDemo {
                                 (minNrOfArgs > 0 ? "and arguments " : "") +
                                 "exists and that it is " +
                                 (isStatic ? "static" : "non-static") + ".");
-            }
-            else if (void.class == factoryMethodToUse.getReturnType()) {
+            }else if (void.class == factoryMethodToUse.getReturnType()) {
                 throw new BeanCreationException(mbd.getResourceDescription(), beanName,
                         "Invalid factory method '" + mbd.getFactoryMethodName() +
                                 "': needs to have a non-void return type!");
-            }
-            else if (ambiguousFactoryMethods != null) {
+            }else if (ambiguousFactoryMethods != null) {
                 throw new BeanCreationException(mbd.getResourceDescription(), beanName,
                         "Ambiguous factory method matches found in bean '" + beanName + "' " +
                                 "(hint: specify index/type/name arguments for simple parameters to avoid type ambiguities): " +
@@ -2210,10 +2205,12 @@ public class BeanInstanceDemo {
 
             if (explicitArgs == null && argsHolderToUse != null) {
                 mbd.factoryMethodToIntrospect = factoryMethodToUse;
+                //存储缓存
                 argsHolderToUse.storeCache(mbd, factoryMethodToUse);
             }
         }
 
+        //实例化bean
         bw.setBeanInstance(instantiate(beanName, mbd, factoryBean, factoryMethodToUse, argsToUse));
         return bw;
     }
@@ -2323,5 +2320,1163 @@ public class BeanInstanceDemo {
         }
     }
 
+
+    //DependencyDescriptor:
+    //初始化基础方法参数的参数名称发现(如果有的话)
+    public void initParameterNameDiscovery(@Nullable ParameterNameDiscoverer parameterNameDiscoverer) {
+        if (this.methodParameter != null) {
+            this.methodParameter.initParameterNameDiscovery(parameterNameDiscoverer);
+        }
+    }
+
+    //MethodParameter:
+    public void initParameterNameDiscovery(@Nullable ParameterNameDiscoverer parameterNameDiscoverer) {
+        //ParameterNameDiscoverer parameterNameDiscoverer
+        this.parameterNameDiscoverer = parameterNameDiscoverer;
+    }
+
+    //DefaultListableBeanFactory:
+    //为指定的依赖项创建一个{Optional}包装器
+    private Optional<?> createOptionalDependency(
+            DependencyDescriptor descriptor, @Nullable String beanName, final Object... args) {
+
+        DependencyDescriptor descriptorToUse = new DefaultListableBeanFactory.NestedDependencyDescriptor(descriptor) {
+            @Override
+            public boolean isRequired() {
+                return false;
+            }
+            @Override
+            public Object resolveCandidate(String beanName, Class<?> requiredType, BeanFactory beanFactory) {
+                return (!ObjectUtils.isEmpty(args) ? beanFactory.getBean(beanName, args) :
+                        super.resolveCandidate(beanName, requiredType, beanFactory));
+            }
+        };
+        //去处理bean依赖
+        Object result = doResolveDependency(descriptorToUse, beanName, null, null);
+        return (result instanceof Optional ? (Optional<?>) result : Optional.ofNullable(result));
+    }
+
+    //DependencyDescriptor:
+    public Object resolveCandidate(String beanName, Class<?> requiredType, BeanFactory beanFactory)
+            throws BeansException {
+        //调用bean工厂的初始化bean方法
+        return beanFactory.getBean(beanName);
+    }
+
+    //DefaultListableBeanFactory:
+    //处理bean依赖
+    public Object doResolveDependency(DependencyDescriptor descriptor, @Nullable String beanName,
+                                      @Nullable Set<String> autowiredBeanNames, @Nullable TypeConverter typeConverter) throws BeansException {
+
+        InjectionPoint previousInjectionPoint = ConstructorResolver.setCurrentInjectionPoint(descriptor);
+        try {
+            Object shortcut = descriptor.resolveShortcut(this);
+            if (shortcut != null) {
+                return shortcut;
+            }
+
+            //确定包装参数/字段的声明(非泛型)类型
+            Class<?> type = descriptor.getDependencyType();
+            Object value = getAutowireCandidateResolver().getSuggestedValue(descriptor);
+            if (value != null) {
+                if (value instanceof String) {
+                    //处理内嵌的属性值
+                    String strVal = resolveEmbeddedValue((String) value);
+                    BeanDefinition bd = (beanName != null && containsBean(beanName) ?
+                            getMergedBeanDefinition(beanName) : null);
+                    //计算bean定义中包含的给定字符串，可能将其解析为表达式
+                    value = evaluateBeanDefinitionString(strVal, bd);
+                }
+                TypeConverter converter = (typeConverter != null ? typeConverter : getTypeConverter());
+                try {
+                    //将值转换为所需的类型(如果需要，从字符串转换)
+                    return converter.convertIfNecessary(value, type, descriptor.getTypeDescriptor());
+                }catch (UnsupportedOperationException ex) {
+                    //不支持类型描述符解析的自定义TypeConverter
+                    return (descriptor.getField() != null ?
+                            converter.convertIfNecessary(value, type, descriptor.getField()) :
+                            converter.convertIfNecessary(value, type, descriptor.getMethodParameter()));
+                }
+            }
+
+            //处理多重的bean
+            Object multipleBeans = resolveMultipleBeans(descriptor, beanName, autowiredBeanNames, typeConverter);
+            if (multipleBeans != null) {
+                return multipleBeans;
+            }
+
+            Map<String, Object> matchingBeans = findAutowireCandidates(beanName, type, descriptor);
+            if (matchingBeans.isEmpty()) {
+                if (isRequired(descriptor)) {
+                    raiseNoMatchingBeanFound(type, descriptor.getResolvableType(), descriptor);
+                }
+                return null;
+            }
+
+            String autowiredBeanName;
+            Object instanceCandidate;
+
+            if (matchingBeans.size() > 1) {
+                autowiredBeanName = determineAutowireCandidate(matchingBeans, descriptor);
+                if (autowiredBeanName == null) {
+                    if (isRequired(descriptor) || !indicatesMultipleBeans(type)) {
+                        return descriptor.resolveNotUnique(descriptor.getResolvableType(), matchingBeans);
+                    }
+                    else {
+                        // In case of an optional Collection/Map, silently ignore a non-unique case:
+                        // possibly it was meant to be an empty collection of multiple regular beans
+                        // (before 4.3 in particular when we didn't even look for collection beans).
+                        return null;
+                    }
+                }
+                instanceCandidate = matchingBeans.get(autowiredBeanName);
+            }
+            else {
+                // We have exactly one match.
+                Map.Entry<String, Object> entry = matchingBeans.entrySet().iterator().next();
+                autowiredBeanName = entry.getKey();
+                instanceCandidate = entry.getValue();
+            }
+
+            if (autowiredBeanNames != null) {
+                autowiredBeanNames.add(autowiredBeanName);
+            }
+            if (instanceCandidate instanceof Class) {
+                instanceCandidate = descriptor.resolveCandidate(autowiredBeanName, type, this);
+            }
+            Object result = instanceCandidate;
+            if (result instanceof NullBean) {
+                if (isRequired(descriptor)) {
+                    raiseNoMatchingBeanFound(type, descriptor.getResolvableType(), descriptor);
+                }
+                result = null;
+            }
+            if (!ClassUtils.isAssignableValue(type, result)) {
+                throw new BeanNotOfRequiredTypeException(autowiredBeanName, type, instanceCandidate.getClass());
+            }
+            return result;
+        }
+        finally {
+            ConstructorResolver.setCurrentInjectionPoint(previousInjectionPoint);
+        }
+    }
+
+    //AutowiredAnnotationBeanPostProcessor.ShortcutDependencyDescriptor:
+    public Object resolveShortcut(BeanFactory beanFactory) {
+        return beanFactory.getBean(this.shortcut, this.requiredType);
+    }
+
+    //AbstractBeanFactory:
+    public String resolveEmbeddedValue(@Nullable String value) {
+        if (value == null) {
+            return null;
+        }
+        String result = value;
+        for (StringValueResolver resolver : this.embeddedValueResolvers) {
+            result = resolver.resolveStringValue(result);
+            if (result == null) {
+                return null;
+            }
+        }
+        return result;
+    }
+
+    //EmbeddedValueResolver:
+    public String resolveStringValue(String strVal) {
+        //BeanExpressionContext exprContext
+        String value = this.exprContext.getBeanFactory().resolveEmbeddedValue(strVal);
+        //BeanExpressionResolver exprResolver
+        if (this.exprResolver != null && value != null) {
+            Object evaluated = this.exprResolver.evaluate(value, this.exprContext);
+            value = (evaluated != null ? evaluated.toString() : null);
+        }
+        return value;
+    }
+
+    //DependencyDescriptor:
+    //确定包装参数/字段的声明(非泛型)类型
+    public Class<?> getDependencyType() {
+        if (this.field != null) {
+            if (this.nestingLevel > 1) {
+                Type type = this.field.getGenericType();
+                for (int i = 2; i <= this.nestingLevel; i++) {
+                    if (type instanceof ParameterizedType) {
+                        Type[] args = ((ParameterizedType) type).getActualTypeArguments();
+                        type = args[args.length - 1];
+                    }
+                }
+                if (type instanceof Class) {
+                    return (Class<?>) type;
+                }else if (type instanceof ParameterizedType) {
+                    Type arg = ((ParameterizedType) type).getRawType();
+                    if (arg instanceof Class) {
+                        return (Class<?>) arg;
+                    }
+                }
+                return Object.class;
+            }else {
+                return this.field.getType();
+            }
+        }else {
+            return obtainMethodParameter().getNestedParameterType();
+        }
+    }
+
+    //MethodParameter:
+    //返回方法/构造函数参数的嵌套类型
+    public Class<?> getNestedParameterType() {
+        if (this.nestingLevel > 1) {
+            Type type = getGenericParameterType();
+            for (int i = 2; i <= this.nestingLevel; i++) {
+                if (type instanceof ParameterizedType) {
+                    Type[] args = ((ParameterizedType) type).getActualTypeArguments();
+                    Integer index = getTypeIndexForLevel(i);
+                    type = args[index != null ? index : args.length - 1];
+                }
+                // TODO: Object.class if unresolvable
+            }
+            if (type instanceof Class) {
+                return (Class<?>) type;
+            }else if (type instanceof ParameterizedType) {
+                Type arg = ((ParameterizedType) type).getRawType();
+                if (arg instanceof Class) {
+                    return (Class<?>) arg;
+                }
+            }
+            return Object.class;
+        }else {
+            return getParameterType();
+        }
+    }
+
+    //AbstractBeanFactory:
+    //计算bean定义中包含的给定字符串，可能将其解析为表达式
+    protected Object evaluateBeanDefinitionString(@Nullable String value, @Nullable BeanDefinition beanDefinition) {
+        if (this.beanExpressionResolver == null) {
+            return value;
+        }
+
+        Scope scope = null;
+        if (beanDefinition != null) {
+            String scopeName = beanDefinition.getScope();
+            if (scopeName != null) {
+                scope = getRegisteredScope(scopeName);
+            }
+        }
+        return this.beanExpressionResolver.evaluate(value, new BeanExpressionContext(this, scope));
+    }
+
+    //AbstractBeanFactory:
+    public Scope getRegisteredScope(String scopeName) {
+        Assert.notNull(scopeName, "Scope identifier must not be null");
+        //Map<String, Scope> scopes = new LinkedHashMap<>(8)
+        //从scope标识符字符串映射到相应的scope
+        return this.scopes.get(scopeName);
+    }
+
+    //TypeConverterSupport:
+    public <T> T convertIfNecessary(@Nullable Object value, @Nullable Class<T> requiredType,
+                                    @Nullable TypeDescriptor typeDescriptor) throws TypeMismatchException {
+
+        Assert.state(this.typeConverterDelegate != null, "No TypeConverterDelegate");
+        try {
+            return this.typeConverterDelegate.convertIfNecessary(null, null, value, requiredType, typeDescriptor);
+        }catch (ConverterNotFoundException | IllegalStateException ex) {
+            throw new ConversionNotSupportedException(value, requiredType, ex);
+        }catch (ConversionException | IllegalArgumentException ex) {
+            throw new TypeMismatchException(value, requiredType, ex);
+        }
+    }
+
+    //TypeConverterDelegate:
+    //将指定属性的值转换为所需的类型(如果需要从字符串转换)
+    public <T> T convertIfNecessary(@Nullable String propertyName, @Nullable Object oldValue, @Nullable Object newValue,
+                                    @Nullable Class<T> requiredType, @Nullable TypeDescriptor typeDescriptor) throws IllegalArgumentException {
+
+        //获取此类型的自定义编辑器
+        PropertyEditor editor = this.propertyEditorRegistry.findCustomEditor(requiredType, propertyName);
+
+        ConversionFailedException conversionAttemptEx = null;
+
+        //没有自定义编辑器，但指定了自定义转换服务
+        ConversionService conversionService = this.propertyEditorRegistry.getConversionService();
+        if (editor == null && conversionService != null && newValue != null && typeDescriptor != null) {
+            TypeDescriptor sourceTypeDesc = TypeDescriptor.forObject(newValue);
+            if (conversionService.canConvert(sourceTypeDesc, typeDescriptor)) {
+                try {
+                    return (T) conversionService.convert(newValue, sourceTypeDesc, typeDescriptor);
+                }catch (ConversionFailedException ex) {
+                    // fallback to default conversion logic below
+                    conversionAttemptEx = ex;
+                }
+            }
+        }
+
+        Object convertedValue = newValue;
+
+        //值的类型不是必需的
+        if (editor != null || (requiredType != null && !ClassUtils.isAssignableValue(requiredType, convertedValue))) {
+            if (typeDescriptor != null && requiredType != null && Collection.class.isAssignableFrom(requiredType) &&
+                    convertedValue instanceof String) {
+                TypeDescriptor elementTypeDesc = typeDescriptor.getElementTypeDescriptor();
+                if (elementTypeDesc != null) {
+                    Class<?> elementType = elementTypeDesc.getType();
+                    if (Class.class == elementType || Enum.class.isAssignableFrom(elementType)) {
+                        convertedValue = StringUtils.commaDelimitedListToStringArray((String) convertedValue);
+                    }
+                }
+            }
+            if (editor == null) {
+                editor = findDefaultEditor(requiredType);
+            }
+            convertedValue = doConvertValue(oldValue, convertedValue, requiredType, editor);
+        }
+
+        boolean standardConversion = false;
+
+        if (requiredType != null) {
+            //如果合适的话，尝试应用一些标准类型转换规则
+            if (convertedValue != null) {
+                if (Object.class == requiredType) {
+                    return (T) convertedValue;
+                }else if (requiredType.isArray()) {
+                    //数组要求->应用适当的元素转换。
+                    if (convertedValue instanceof String && Enum.class.isAssignableFrom(requiredType.getComponentType())) {
+                        convertedValue = StringUtils.commaDelimitedListToStringArray((String) convertedValue);
+                    }
+                    return (T) convertToTypedArray(convertedValue, propertyName, requiredType.getComponentType());
+                }else if (convertedValue instanceof Collection) {
+                    // Convert elements to target type, if determined.
+                    convertedValue = convertToTypedCollection(
+                            (Collection<?>) convertedValue, propertyName, requiredType, typeDescriptor);
+                    standardConversion = true;
+                }else if (convertedValue instanceof Map) {
+                    //如果确定，将元素转换为目标类型。
+                    convertedValue = convertToTypedMap(
+                            (Map<?, ?>) convertedValue, propertyName, requiredType, typeDescriptor);
+                    standardConversion = true;
+                }
+                if (convertedValue.getClass().isArray() && Array.getLength(convertedValue) == 1) {
+                    convertedValue = Array.get(convertedValue, 0);
+                    standardConversion = true;
+                }
+                if (String.class == requiredType && ClassUtils.isPrimitiveOrWrapper(convertedValue.getClass())) {
+                    //我们可以限制任何原始值
+                    return (T) convertedValue.toString();
+                }else if (convertedValue instanceof String && !requiredType.isInstance(convertedValue)) {
+                    if (conversionAttemptEx == null && !requiredType.isInterface() && !requiredType.isEnum()) {
+                        try {
+                            Constructor<T> strCtor = requiredType.getConstructor(String.class);
+                            return BeanUtils.instantiateClass(strCtor, convertedValue);
+                        }catch (NoSuchMethodException ex) {
+                            // proceed with field lookup
+                            if (logger.isTraceEnabled()) {
+                                logger.trace("No String constructor found on type [" + requiredType.getName() + "]", ex);
+                            }
+                        }catch (Exception ex) {
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Construction via String failed for type [" + requiredType.getName() + "]", ex);
+                            }
+                        }
+                    }
+                    String trimmedValue = ((String) convertedValue).trim();
+                    if (requiredType.isEnum() && trimmedValue.isEmpty()) {
+                        //它是一个空的enum标识符:将enum值重置为null
+                        return null;
+                    }
+                    convertedValue = attemptToConvertStringToEnum(requiredType, trimmedValue, convertedValue);
+                    standardConversion = true;
+                }else if (convertedValue instanceof Number && Number.class.isAssignableFrom(requiredType)) {
+                    convertedValue = NumberUtils.convertNumberToTargetClass(
+                            (Number) convertedValue, (Class<Number>) requiredType);
+                    standardConversion = true;
+                }
+            }else {
+                // convertedValue == null
+                if (requiredType == Optional.class) {
+                    convertedValue = Optional.empty();
+                }
+            }
+
+            if (!ClassUtils.isAssignableValue(requiredType, convertedValue)) {
+                if (conversionAttemptEx != null) {
+                    //来自前面的ConversionService调用的原始异常
+                    throw conversionAttemptEx;
+                }else if (conversionService != null && typeDescriptor != null) {
+                    //以前没有尝试使用ConversionService，可能找到了自定义编辑器，但编辑器无法生成所需的类型
+                    TypeDescriptor sourceTypeDesc = TypeDescriptor.forObject(newValue);
+                    if (conversionService.canConvert(sourceTypeDesc, typeDescriptor)) {
+                        return (T) conversionService.convert(newValue, sourceTypeDesc, typeDescriptor);
+                    }
+                }
+
+                //绝对不匹配: throw IllegalArgumentException/IllegalStateException
+                StringBuilder msg = new StringBuilder();
+                msg.append("Cannot convert value of type '").append(ClassUtils.getDescriptiveType(newValue));
+                msg.append("' to required type '").append(ClassUtils.getQualifiedName(requiredType)).append("'");
+                if (propertyName != null) {
+                    msg.append(" for property '").append(propertyName).append("'");
+                }
+                if (editor != null) {
+                    msg.append(": PropertyEditor [").append(editor.getClass().getName()).append(
+                            "] returned inappropriate value of type '").append(
+                            ClassUtils.getDescriptiveType(convertedValue)).append("'");
+                    throw new IllegalArgumentException(msg.toString());
+                }else {
+                    msg.append(": no matching editors or conversion strategy found");
+                    throw new IllegalStateException(msg.toString());
+                }
+            }
+        }
+
+        if (conversionAttemptEx != null) {
+            if (editor == null && !standardConversion && requiredType != null && Object.class != requiredType) {
+                throw conversionAttemptEx;
+            }
+            logger.debug("Original ConversionService attempt failed - ignored since " +
+                    "PropertyEditor based conversion eventually succeeded", conversionAttemptEx);
+        }
+
+        return (T) convertedValue;
+    }
+
+
+    private Object resolveMultipleBeans(DependencyDescriptor descriptor, @Nullable String beanName,
+                                        @Nullable Set<String> autowiredBeanNames, @Nullable TypeConverter typeConverter) {
+        //获取依赖bean类型
+        final Class<?> type = descriptor.getDependencyType();
+
+        //对多个元素的流访问的依赖描述符标记
+        if (descriptor instanceof DefaultListableBeanFactory.StreamDependencyDescriptor) {
+            //查找与所需类型匹配的bean实例。在为指定bean进行自动装配期间调用
+            Map<String, Object> matchingBeans = findAutowireCandidates(beanName, type, descriptor);
+            if (autowiredBeanNames != null) {
+                autowiredBeanNames.addAll(matchingBeans.keySet());
+            }
+            Stream<Object> stream = matchingBeans.keySet().stream()
+                    .map(name -> descriptor.resolveCandidate(name, type, this))
+                    .filter(bean -> !(bean instanceof NullBean));
+            if (((DefaultListableBeanFactory.StreamDependencyDescriptor) descriptor).isOrdered()) {
+                stream = stream.sorted(adaptOrderComparator(matchingBeans));
+            }
+            return stream;
+        }else if (type.isArray()) {
+            Class<?> componentType = type.getComponentType();
+            ResolvableType resolvableType = descriptor.getResolvableType();
+            Class<?> resolvedArrayType = resolvableType.resolve(type);
+            if (resolvedArrayType != type) {
+                componentType = resolvableType.getComponentType().resolve();
+            }
+            if (componentType == null) {
+                return null;
+            }
+            Map<String, Object> matchingBeans = findAutowireCandidates(beanName, componentType,
+                    new DefaultListableBeanFactory.MultiElementDescriptor(descriptor));
+            if (matchingBeans.isEmpty()) {
+                return null;
+            }
+            if (autowiredBeanNames != null) {
+                autowiredBeanNames.addAll(matchingBeans.keySet());
+            }
+            TypeConverter converter = (typeConverter != null ? typeConverter : getTypeConverter());
+            Object result = converter.convertIfNecessary(matchingBeans.values(), resolvedArrayType);
+            if (result instanceof Object[]) {
+                Comparator<Object> comparator = adaptDependencyComparator(matchingBeans);
+                if (comparator != null) {
+                    Arrays.sort((Object[]) result, comparator);
+                }
+            }
+            return result;
+        }else if (Collection.class.isAssignableFrom(type) && type.isInterface()) {
+            Class<?> elementType = descriptor.getResolvableType().asCollection().resolveGeneric();
+            if (elementType == null) {
+                return null;
+            }
+            Map<String, Object> matchingBeans = findAutowireCandidates(beanName, elementType,
+                    new DefaultListableBeanFactory.MultiElementDescriptor(descriptor));
+            if (matchingBeans.isEmpty()) {
+                return null;
+            }
+            if (autowiredBeanNames != null) {
+                autowiredBeanNames.addAll(matchingBeans.keySet());
+            }
+            TypeConverter converter = (typeConverter != null ? typeConverter : getTypeConverter());
+            Object result = converter.convertIfNecessary(matchingBeans.values(), type);
+            if (result instanceof List) {
+                Comparator<Object> comparator = adaptDependencyComparator(matchingBeans);
+                if (comparator != null) {
+                    ((List<?>) result).sort(comparator);
+                }
+            }
+            return result;
+        }else if (Map.class == type) {
+            ResolvableType mapType = descriptor.getResolvableType().asMap();
+            Class<?> keyType = mapType.resolveGeneric(0);
+            if (String.class != keyType) {
+                return null;
+            }
+            Class<?> valueType = mapType.resolveGeneric(1);
+            if (valueType == null) {
+                return null;
+            }
+            Map<String, Object> matchingBeans = findAutowireCandidates(beanName, valueType,
+                    new DefaultListableBeanFactory.MultiElementDescriptor(descriptor));
+            if (matchingBeans.isEmpty()) {
+                return null;
+            }
+            if (autowiredBeanNames != null) {
+                autowiredBeanNames.addAll(matchingBeans.keySet());
+            }
+            return matchingBeans;
+        }else {
+            return null;
+        }
+    }
+
+
+    //DefaultListableBeanFactory:
+    protected Map<String, Object> findAutowireCandidates(
+            @Nullable String beanName, Class<?> requiredType, DependencyDescriptor descriptor) {
+
+        //获取给定类型的所有bean名称，包括在祖先工厂中定义的名称。将在覆盖bean定义的情况下返回唯一的名称
+        String[] candidateNames = BeanFactoryUtils.beanNamesForTypeIncludingAncestors(
+                this, requiredType, true, descriptor.isEager());
+
+        Map<String, Object> result = new LinkedHashMap<>(candidateNames.length);
+        for (Map.Entry<Class<?>, Object> classObjectEntry : this.resolvableDependencies.entrySet()) {
+            Class<?> autowiringType = classObjectEntry.getKey();
+            if (autowiringType.isAssignableFrom(requiredType)) {
+                Object autowiringValue = classObjectEntry.getValue();
+                autowiringValue = AutowireUtils.resolveAutowiringValue(autowiringValue, requiredType);
+                if (requiredType.isInstance(autowiringValue)) {
+                    result.put(ObjectUtils.identityToString(autowiringValue), autowiringValue);
+                    break;
+                }
+            }
+        }
+        for (String candidate : candidateNames) {
+            if (!isSelfReference(beanName, candidate) && isAutowireCandidate(candidate, descriptor)) {
+                addCandidateEntry(result, candidate, descriptor, requiredType);
+            }
+        }
+        if (result.isEmpty()) {
+            boolean multiple = indicatesMultipleBeans(requiredType);
+            // Consider fallback matches if the first pass failed to find anything...
+            DependencyDescriptor fallbackDescriptor = descriptor.forFallbackMatch();
+            for (String candidate : candidateNames) {
+                if (!isSelfReference(beanName, candidate) && isAutowireCandidate(candidate, fallbackDescriptor) &&
+                        (!multiple || getAutowireCandidateResolver().hasQualifier(descriptor))) {
+                    addCandidateEntry(result, candidate, descriptor, requiredType);
+                }
+            }
+            if (result.isEmpty() && !multiple) {
+                // Consider self references as a final pass...
+                // but in the case of a dependency collection, not the very same bean itself.
+                for (String candidate : candidateNames) {
+                    if (isSelfReference(beanName, candidate) &&
+                            (!(descriptor instanceof DefaultListableBeanFactory.MultiElementDescriptor) || !beanName.equals(candidate)) &&
+                            isAutowireCandidate(candidate, fallbackDescriptor)) {
+                        addCandidateEntry(result, candidate, descriptor, requiredType);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    //BeanFactoryUtils:
+    public static String[] beanNamesForTypeIncludingAncestors(
+            ListableBeanFactory lbf, Class<?> type, boolean includeNonSingletons, boolean allowEagerInit) {
+
+        Assert.notNull(lbf, "ListableBeanFactory must not be null");
+        String[] result = lbf.getBeanNamesForType(type, includeNonSingletons, allowEagerInit);
+        if (lbf instanceof HierarchicalBeanFactory) {
+            HierarchicalBeanFactory hbf = (HierarchicalBeanFactory) lbf;
+            if (hbf.getParentBeanFactory() instanceof ListableBeanFactory) {
+                String[] parentResult = beanNamesForTypeIncludingAncestors(
+                        (ListableBeanFactory) hbf.getParentBeanFactory(), type, includeNonSingletons, allowEagerInit);
+                result = mergeNamesWithParent(result, parentResult, hbf);
+            }
+        }
+        return result;
+    }
+
+    //BeanFactoryUtils:
+    //将给定的bean名称结果与给定的父结果合并
+    private static String[] mergeNamesWithParent(String[] result, String[] parentResult, HierarchicalBeanFactory hbf) {
+        if (parentResult.length == 0) {
+            return result;
+        }
+        List<String> merged = new ArrayList<>(result.length + parentResult.length);
+        merged.addAll(Arrays.asList(result));
+        for (String beanName : parentResult) {
+            if (!merged.contains(beanName) && !hbf.containsLocalBean(beanName)) {
+                merged.add(beanName);
+            }
+        }
+        return StringUtils.toStringArray(merged);
+    }
+
+
+
+
+
+    //--------------------------
+    //AbstractAutowireCapableBeanFactory:
+    //“自动装配构造函数”(按类型提供构造函数参数)行为。
+    //如果指定了显式构造函数参数值，将所有剩余的参数与bean工厂中的bean进行匹配。这对应于构造函数注入
+    protected BeanWrapper autowireConstructor(
+            String beanName, RootBeanDefinition mbd, @Nullable Constructor<?>[] ctors, @Nullable Object[] explicitArgs) {
+
+        return new ConstructorResolver(this).autowireConstructor(beanName, mbd, ctors, explicitArgs);
+    }
+
+
+    //ConstructorResolver:
+    //“自动装配构造函数”(按类型提供构造函数参数)行为。如果指定了显式构造函数参数值，将所有剩余参数与bean工厂中的bean匹配，
+    //也可以应用。这与构造函数注入相对应:在这种模式下，Spring bean工厂能够承载期望基于构造函数的依赖项解析的组件
+    public BeanWrapper autowireConstructor(String beanName, RootBeanDefinition mbd,
+                                           @Nullable Constructor<?>[] chosenCtors, @Nullable Object[] explicitArgs) {
+
+        BeanWrapperImpl bw = new BeanWrapperImpl();
+        this.beanFactory.initBeanWrapper(bw);
+
+        Constructor<?> constructorToUse = null;
+        ConstructorResolver.ArgumentsHolder argsHolderToUse = null;
+        Object[] argsToUse = null;
+
+        if (explicitArgs != null) {
+            argsToUse = explicitArgs;
+        }else {
+            Object[] argsToResolve = null;
+            synchronized (mbd.constructorArgumentLock) {
+                constructorToUse = (Constructor<?>) mbd.resolvedConstructorOrFactoryMethod;
+                if (constructorToUse != null && mbd.constructorArgumentsResolved) {
+                    //找到缓存的构造函数
+                    argsToUse = mbd.resolvedConstructorArguments;
+                    if (argsToUse == null) {
+                        argsToResolve = mbd.preparedConstructorArguments;
+                    }
+                }
+            }
+            if (argsToResolve != null) {
+                argsToUse = resolvePreparedArguments(beanName, mbd, bw, constructorToUse, argsToResolve, true);
+            }
+        }
+
+        if (constructorToUse == null || argsToUse == null) {
+            //以指定的构造函数为例(如果有)
+            Constructor<?>[] candidates = chosenCtors;
+            if (candidates == null) {
+                Class<?> beanClass = mbd.getBeanClass();
+                try {
+                    candidates = (mbd.isNonPublicAccessAllowed() ?
+                            beanClass.getDeclaredConstructors() : beanClass.getConstructors());
+                }catch (Throwable ex) {
+                    throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                            "Resolution of declared constructors on bean Class [" + beanClass.getName() +
+                                    "] from ClassLoader [" + beanClass.getClassLoader() + "] failed", ex);
+                }
+            }
+
+            if (candidates.length == 1 && explicitArgs == null && !mbd.hasConstructorArgumentValues()) {
+                Constructor<?> uniqueCandidate = candidates[0];
+                if (uniqueCandidate.getParameterCount() == 0) {
+                    synchronized (mbd.constructorArgumentLock) {
+                        mbd.resolvedConstructorOrFactoryMethod = uniqueCandidate;
+                        mbd.constructorArgumentsResolved = true;
+                        mbd.resolvedConstructorArguments = EMPTY_ARGS;
+                    }
+                    //实例化bean
+                    bw.setBeanInstance(instantiate(beanName, mbd, uniqueCandidate, EMPTY_ARGS));
+                    return bw;
+                }
+            }
+
+            //需要解析构造函数
+            boolean autowiring = (chosenCtors != null ||
+                    mbd.getResolvedAutowireMode() == AutowireCapableBeanFactory.AUTOWIRE_CONSTRUCTOR);
+            ConstructorArgumentValues resolvedValues = null;
+
+            int minNrOfArgs;
+            if (explicitArgs != null) {
+                minNrOfArgs = explicitArgs.length;
+            }else {
+                ConstructorArgumentValues cargs = mbd.getConstructorArgumentValues();
+                resolvedValues = new ConstructorArgumentValues();
+                //将此bean的构造函数参数解析为resolvedValues对象。这可能涉及到查找其他bean。
+                //此方法还用于处理静态工厂方法的调用
+                minNrOfArgs = resolveConstructorArguments(beanName, mbd, bw, cargs, resolvedValues);
+            }
+
+            AutowireUtils.sortConstructors(candidates);
+            int minTypeDiffWeight = Integer.MAX_VALUE;
+            Set<Constructor<?>> ambiguousConstructors = null;
+            LinkedList<UnsatisfiedDependencyException> causes = null;
+
+            for (Constructor<?> candidate : candidates) {
+                Class<?>[] paramTypes = candidate.getParameterTypes();
+
+                if (constructorToUse != null && argsToUse != null && argsToUse.length > paramTypes.length) {
+                    //已经找到贪婪的构造函数可以满足-->不寻找任何进一步，只有较少的贪婪构造函数留下
+                    break;
+                }
+                if (paramTypes.length < minNrOfArgs) {
+                    continue;
+                }
+
+                ConstructorResolver.ArgumentsHolder argsHolder;
+                if (resolvedValues != null) {
+                    try {
+                        //委托检查Java 6的ConstructorProperties注释
+                        String[] paramNames = ConstructorResolver.ConstructorPropertiesChecker.evaluate(candidate, paramTypes.length);
+                        if (paramNames == null) {
+                            ParameterNameDiscoverer pnd = this.beanFactory.getParameterNameDiscoverer();
+                            if (pnd != null) {
+                                paramNames = pnd.getParameterNames(candidate);
+                            }
+                        }
+                        //给定已解析的构造函数参数值，创建参数数组来调用构造函数或工厂方法
+                        argsHolder = createArgumentArray(beanName, mbd, resolvedValues, bw, paramTypes, paramNames,
+                                getUserDeclaredConstructor(candidate), autowiring, candidates.length == 1);
+                    }catch (UnsatisfiedDependencyException ex) {
+                        if (logger.isTraceEnabled()) {
+                            logger.trace("Ignoring constructor [" + candidate + "] of bean '" + beanName + "': " + ex);
+                        }
+                        //吞下并尝试下一个构造函数
+                        if (causes == null) {
+                            causes = new LinkedList<>();
+                        }
+                        causes.add(ex);
+                        continue;
+                    }
+                }else {
+                    //给定的显式参数-->参数长度必须精确匹配
+                    if (paramTypes.length != explicitArgs.length) {
+                        continue;
+                    }
+                    argsHolder = new ConstructorResolver.ArgumentsHolder(explicitArgs);
+                }
+
+                int typeDiffWeight = (mbd.isLenientConstructorResolution() ?
+                        argsHolder.getTypeDifferenceWeight(paramTypes) : argsHolder.getAssignabilityWeight(paramTypes));
+                //如果它表示最接近的匹配，则选择此构造函数
+                if (typeDiffWeight < minTypeDiffWeight) {
+                    constructorToUse = candidate;
+                    argsHolderToUse = argsHolder;
+                    argsToUse = argsHolder.arguments;
+                    minTypeDiffWeight = typeDiffWeight;
+                    ambiguousConstructors = null;
+                }else if (constructorToUse != null && typeDiffWeight == minTypeDiffWeight) {
+                    if (ambiguousConstructors == null) {
+                        ambiguousConstructors = new LinkedHashSet<>();
+                        ambiguousConstructors.add(constructorToUse);
+                    }
+                    ambiguousConstructors.add(candidate);
+                }
+            }
+
+            if (constructorToUse == null) {
+                if (causes != null) {
+                    UnsatisfiedDependencyException ex = causes.removeLast();
+                    for (Exception cause : causes) {
+                        this.beanFactory.onSuppressedException(cause);
+                    }
+                    throw ex;
+                }
+                throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                        "Could not resolve matching constructor " +
+                                "(hint: specify index/type/name arguments for simple parameters to avoid type ambiguities)");
+            }else if (ambiguousConstructors != null && !mbd.isLenientConstructorResolution()) {
+                throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                        "Ambiguous constructor matches found in bean '" + beanName + "' " +
+                                "(hint: specify index/type/name arguments for simple parameters to avoid type ambiguities): " +
+                                ambiguousConstructors);
+            }
+
+            if (explicitArgs == null && argsHolderToUse != null) {
+                argsHolderToUse.storeCache(mbd, constructorToUse);
+            }
+        }
+
+        Assert.state(argsToUse != null, "Unresolved constructor arguments");
+        //实例化bean
+        bw.setBeanInstance(instantiate(beanName, mbd, constructorToUse, argsToUse));
+        return bw;
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    //使用给定bean的默认构造函数实例化它
+    protected BeanWrapper instantiateBean(final String beanName, final RootBeanDefinition mbd) {
+        try {
+            Object beanInstance;
+            final BeanFactory parent = this;
+            //获取系统的安全管理接口，JDK标准的安全管理API
+            if (System.getSecurityManager() != null) {
+                ////这里是一个匿名内置类，根据实例化策略创建实例对象
+                beanInstance = AccessController.doPrivileged((PrivilegedAction<Object>) () ->
+                                getInstantiationStrategy().instantiate(mbd, beanName, parent),
+                        getAccessControlContext());
+            } else {
+                //将实例化的对象封装起来
+                beanInstance = getInstantiationStrategy().instantiate(mbd, beanName, parent);
+            }
+            BeanWrapper bw = new BeanWrapperImpl(beanInstance);
+            initBeanWrapper(bw);
+            return bw;
+        } catch (Throwable ex) {
+            throw new BeanCreationException(
+                    mbd.getResourceDescription(), beanName, "Instantiation of bean failed", ex);
+        }
+    }
+
+    //SimpleInstantiationStrategy:
+    //使用初始化策略实例化Bean对象
+    public Object instantiate(RootBeanDefinition bd, @Nullable String beanName, BeanFactory owner) {
+        //如果Bean定义中没有方法覆盖，则就不需要CGLIB父类类的方法
+        if (!bd.hasMethodOverrides()) {
+            Constructor<?> constructorToUse;
+            synchronized (bd.constructorArgumentLock) {
+                //获取对象的构造方法或工厂方法
+                constructorToUse = (Constructor<?>) bd.resolvedConstructorOrFactoryMethod;
+                //如果没有构造方法且没有工厂方法
+                if (constructorToUse == null) {
+                    //使用JDK的反射机制，判断要实例化的Bean是否是接口
+                    final Class<?> clazz = bd.getBeanClass();
+                    if (clazz.isInterface()) {
+                        throw new BeanInstantiationException(clazz, "Specified class is an interface");
+                    }
+                    try {
+                        if (System.getSecurityManager() != null) {
+                            //这里是一个匿名内置类，使用反射机制获取Bean的构造方法
+                            constructorToUse = AccessController.doPrivileged(
+                                    (PrivilegedExceptionAction<Constructor<?>>) clazz::getDeclaredConstructor);
+                        }else {
+                            constructorToUse = clazz.getDeclaredConstructor();
+                        }
+                        bd.resolvedConstructorOrFactoryMethod = constructorToUse;
+                    }catch (Throwable ex) {
+                        throw new BeanInstantiationException(clazz, "No default constructor found", ex);
+                    }
+                }
+            }
+            //使用BeanUtils实例化，通过反射机制调用”构造方法.newInstance(arg)”来进行实例化
+            return BeanUtils.instantiateClass(constructorToUse);
+        }else {
+            //使用CGLIB来实例化对象
+            return instantiateWithMethodInjection(bd, beanName, owner);
+        }
+    }
+
+    //BeanUtils:
+    //使用给定构造函数实例化类的便利方法。注意，如果给定不可访问的构造函数(即非公共的)，
+    //此方法将尝试设置可访问的构造函数，并支持带有可选参数和默认值的Kotlin类。
+    public static <T> T instantiateClass(Constructor<T> ctor, Object... args) throws BeanInstantiationException {
+        Assert.notNull(ctor, "Constructor must not be null");
+        try {
+            ReflectionUtils.makeAccessible(ctor);
+            if (KotlinDetector.isKotlinReflectPresent() && KotlinDetector.isKotlinType(ctor.getDeclaringClass())) {
+                return BeanUtils.KotlinDelegate.instantiateClass(ctor, args);
+            }else {
+                Class<?>[] parameterTypes = ctor.getParameterTypes();
+                Assert.isTrue(args.length <= parameterTypes.length, "Can't specify more arguments than constructor parameters");
+                Object[] argsWithDefaultValues = new Object[args.length];
+                for (int i = 0 ; i < args.length; i++) {
+                    if (args[i] == null) {
+                        Class<?> parameterType = parameterTypes[i];
+                        argsWithDefaultValues[i] = (parameterType.isPrimitive() ? DEFAULT_TYPE_VALUES.get(parameterType) : null);
+                    }
+                    else {
+                        argsWithDefaultValues[i] = args[i];
+                    }
+                }
+                return ctor.newInstance(argsWithDefaultValues);
+            }
+        }catch (InstantiationException ex) {
+            throw new BeanInstantiationException(ctor, "Is it an abstract class?", ex);
+        }catch (IllegalAccessException ex) {
+            throw new BeanInstantiationException(ctor, "Is the constructor accessible?", ex);
+        }catch (IllegalArgumentException ex) {
+            throw new BeanInstantiationException(ctor, "Illegal arguments for constructor", ex);
+        }catch (InvocationTargetException ex) {
+            throw new BeanInstantiationException(ctor, "Constructor threw exception", ex.getTargetException());
+        }
+    }
+
+    //CglibSubclassingInstantiationStrategy:
+    protected Object instantiateWithMethodInjection(RootBeanDefinition bd, @Nullable String beanName, BeanFactory owner) {
+        return instantiateWithMethodInjection(bd, beanName, owner, null);
+    }
+
+    //CglibSubclassingInstantiationStrategy:
+    protected Object instantiateWithMethodInjection(RootBeanDefinition bd, @Nullable String beanName, BeanFactory owner,
+                                                    @Nullable Constructor<?> ctor, Object... args) {
+        //必须生成CGLIB子类
+        return new CglibSubclassingInstantiationStrategy.CglibSubclassCreator(bd, owner).instantiate(ctor, args);
+    }
+
+    ////CglibSubclassingInstantiationStrategy:
+    //创建动态生成的实现所需查找的子类的新实例
+    public Object instantiate(@Nullable Constructor<?> ctor, Object... args) {
+        Class<?> subclass = createEnhancedSubclass(this.beanDefinition);
+        Object instance;
+        if (ctor == null) {
+            instance = BeanUtils.instantiateClass(subclass);
+        }else {
+            try {
+                Constructor<?> enhancedSubclassConstructor = subclass.getConstructor(ctor.getParameterTypes());
+                instance = enhancedSubclassConstructor.newInstance(args);
+            }catch (Exception ex) {
+                throw new BeanInstantiationException(this.beanDefinition.getBeanClass(),
+                        "Failed to invoke constructor for CGLIB enhanced subclass [" + subclass.getName() + "]", ex);
+            }
+        }
+        //直接在实例上而不是在增强类中设置回调(通过增强器)，以避免内存泄漏。
+        Factory factory = (Factory) instance;
+        factory.setCallbacks(new Callback[] {NoOp.INSTANCE,
+                new CglibSubclassingInstantiationStrategy.LookupOverrideMethodInterceptor(this.beanDefinition, this.owner),
+                new CglibSubclassingInstantiationStrategy.ReplaceOverrideMethodInterceptor(this.beanDefinition, this.owner)});
+        return instance;
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+    //-----------------------------
+    //AbstractAutowireCapableBeanFactory:
+    //用bean定义中的属性值填充给定BeanWrapper中的bean实例。
+    protected void populateBean(String beanName, RootBeanDefinition mbd, @Nullable BeanWrapper bw) {
+        if (bw == null) {
+            if (mbd.hasPropertyValues()) {
+                throw new BeanCreationException(
+                        mbd.getResourceDescription(), beanName, "Cannot apply property values to null instance");
+            }else {
+                //跳过空实例的属性填充阶段
+                return;
+            }
+        }
+
+        //在设置属性之前调用Bean的PostProcessor后置处理器
+        boolean continueWithPropertyPopulation = true;
+        if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+            for (BeanPostProcessor bp : getBeanPostProcessors()) {
+                if (bp instanceof InstantiationAwareBeanPostProcessor) {
+                    InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+                    if (!ibp.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName)) {
+                        continueWithPropertyPopulation = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!continueWithPropertyPopulation) {
+            return;
+        }
+
+        //获取容器在解析Bean定义资源时为BeanDefiniton中设置的属性值
+        PropertyValues pvs = (mbd.hasPropertyValues() ? mbd.getPropertyValues() : null);
+        //依赖注入开始，首先处理autowire自动装配的注入
+        int resolvedAutowireMode = mbd.getResolvedAutowireMode();
+        if (resolvedAutowireMode == AUTOWIRE_BY_NAME || resolvedAutowireMode == AUTOWIRE_BY_TYPE) {
+            MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
+            //1>对autowire自动装配的处理，根据Bean名称自动装配注入
+            if (resolvedAutowireMode == AUTOWIRE_BY_NAME) {
+                autowireByName(beanName, mbd, bw, newPvs);
+            }
+            //2>根据Bean类型自动装配注入
+            if (resolvedAutowireMode == AUTOWIRE_BY_TYPE) {
+                autowireByType(beanName, mbd, bw, newPvs);
+            }
+            pvs = newPvs;
+        }
+
+        //检查容器是否持有用于处理单态模式Bean关闭时的后置处理器
+        boolean hasInstAwareBpps = hasInstantiationAwareBeanPostProcessors();
+        //Bean实例对象没有依赖，即没有继承基类
+        boolean needsDepCheck = (mbd.getDependencyCheck() != AbstractBeanDefinition.DEPENDENCY_CHECK_NONE);
+
+        PropertyDescriptor[] filteredPds = null;
+        if (hasInstAwareBpps) {
+            if (pvs == null) {
+                pvs = mbd.getPropertyValues();
+            }
+            for (BeanPostProcessor bp : getBeanPostProcessors()) {
+                if (bp instanceof InstantiationAwareBeanPostProcessor) {
+                    InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+                    PropertyValues pvsToUse = ibp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
+                    if (pvsToUse == null) {
+                        if (filteredPds == null) {
+                            //从实例对象中提取属性描述符
+                            filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+                        }
+                        //使用BeanPostProcessor处理器处理属性值
+                        pvsToUse = ibp.postProcessPropertyValues(pvs, filteredPds, bw.getWrappedInstance(), beanName);
+                        if (pvsToUse == null) {
+                            return;
+                        }
+                    }
+                    pvs = pvsToUse;
+                }
+            }
+        }
+        if (needsDepCheck) {
+            if (filteredPds == null) {
+                filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+            }
+            //为要设置的属性进行依赖检查
+            checkDependencies(beanName, mbd, filteredPds, pvs);
+        }
+
+        if (pvs != null) {
+            //对属性进行注入
+            applyPropertyValues(beanName, mbd, bw, pvs);
+        }
+    }
+
+
+    //AbstractAutowireCapableBeanFactory:
+    //如果autowire设置为“byName”，则使用对工厂中其他bean的引用来填充任何缺失的属性值
+    protected void autowireByName(
+            String beanName, AbstractBeanDefinition mbd, BeanWrapper bw, MutablePropertyValues pvs) {
+
+        String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
+        for (String propertyName : propertyNames) {
+            if (containsBean(propertyName)) {
+                //当属性也是一个bean时，递归调用AbstractBeanFactory.getBean()方法, 去实例化bean
+                Object bean = getBean(propertyName);
+                pvs.add(propertyName, bean);
+                //为当前bean注册一个从属bean，在销毁当前bean之前销毁它
+                registerDependentBean(propertyName, beanName);
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Added autowiring by name from bean name '" + beanName +
+                            "' via property '" + propertyName + "' to bean named '" + propertyName + "'");
+                }
+            }else {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Not autowiring property '" + propertyName + "' of bean '" + beanName +
+                            "' by name: no matching bean found");
+                }
+            }
+        }
+    }
+
+
+    //AbstractAutowireCapableBeanFactory:
+    //返回一个不满足的非简单bean属性数组。这些可能是对工厂中其他bean的不满意的引用。不包括基本类型或字符串等简单属性
+    protected String[] unsatisfiedNonSimpleProperties(AbstractBeanDefinition mbd, BeanWrapper bw) {
+        Set<String> result = new TreeSet<>();
+        PropertyValues pvs = mbd.getPropertyValues();
+        PropertyDescriptor[] pds = bw.getPropertyDescriptors();
+        for (PropertyDescriptor pd : pds) {
+            if (pd.getWriteMethod() != null && !isExcludedFromDependencyCheck(pd) && !pvs.contains(pd.getName()) &&
+                    !BeanUtils.isSimpleProperty(pd.getPropertyType())) {
+                result.add(pd.getName());
+            }
+        }
+        return StringUtils.toStringArray(result);
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    //确定给定的bean属性是否被排除在依赖项检查之外。此实现排除由CGLIB定义的属性，
+    //以及其类型与被忽略的依赖项类型相匹配或由被忽略的依赖项接口定义的属性。
+    protected boolean isExcludedFromDependencyCheck(PropertyDescriptor pd) {
+        return (AutowireUtils.isExcludedFromDependencyCheck(pd) ||
+                this.ignoredDependencyTypes.contains(pd.getPropertyType()) ||
+                AutowireUtils.isSetterDefinedInInterface(pd, this.ignoredDependencyInterfaces));
+    }
+
+
+    //AbstractAutowireCapableBeanFactory:
+    //抽象方法定义“按类型自动装配”(按类型定义bean属性)行为。这类似于PicoContainer默认设置，其中bean工厂中必须恰好有一个
+    //属性类型的bean。这使得bean工厂很容易配置为较小的名称空间，但是对于较大的应用程序，它的工作效果不如标准的Spring行为
+    protected void autowireByType(
+            String beanName, AbstractBeanDefinition mbd, BeanWrapper bw, MutablePropertyValues pvs) {
+
+        TypeConverter converter = getCustomTypeConverter();
+        if (converter == null) {
+            converter = bw;
+        }
+
+        Set<String> autowiredBeanNames = new LinkedHashSet<>(4);
+        String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
+        for (String propertyName : propertyNames) {
+            try {
+                //根据属性名获取属性描述
+                PropertyDescriptor pd = bw.getPropertyDescriptor(propertyName);
+                //不要尝试通过类型对象的类型进行自动装配:这是没有意义的，即使它在技术上是一个不满足的、非简单的属性
+                if (Object.class != pd.getPropertyType()) {
+                    //获取指定属性的写方法
+                    MethodParameter methodParam = BeanUtils.getWriteMethodParameter(pd);
+                    //如果是优先后处理器，则不允许立即初始化类型匹配
+                    boolean eager = !PriorityOrdered.class.isInstance(bw.getWrappedInstance());
+                    DependencyDescriptor desc = new AbstractAutowireCapableBeanFactory.AutowireByTypeDependencyDescriptor(methodParam, eager);
+                    //解析处理属性bean依赖
+                    Object autowiredArgument = resolveDependency(desc, beanName, autowiredBeanNames, converter);
+                    if (autowiredArgument != null) {
+                        pvs.add(propertyName, autowiredArgument);
+                    }
+                    for (String autowiredBeanName : autowiredBeanNames) {
+                        registerDependentBean(autowiredBeanName, beanName);
+                        if (logger.isTraceEnabled()) {
+                            logger.trace("Autowiring by type from bean name '" + beanName + "' via property '" +
+                                    propertyName + "' to bean named '" + autowiredBeanName + "'");
+                        }
+                    }
+                    autowiredBeanNames.clear();
+                }
+            }catch (BeansException ex) {
+                throw new UnsatisfiedDependencyException(mbd.getResourceDescription(), beanName, propertyName, ex);
+            }
+        }
+    }
+
+    //BeanWrapperImpl:
+    public PropertyDescriptor getPropertyDescriptor(String propertyName) throws InvalidPropertyException {
+        BeanWrapperImpl nestedBw = (BeanWrapperImpl) getPropertyAccessorForPropertyPath(propertyName);
+        String finalPath = getFinalPath(nestedBw, propertyName);
+        PropertyDescriptor pd = nestedBw.getCachedIntrospectionResults().getPropertyDescriptor(finalPath);
+        if (pd == null) {
+            throw new InvalidPropertyException(getRootClass(), getNestedPath() + propertyName,
+                    "No property '" + propertyName + "' found");
+        }
+        return pd;
+    }
+
+    //AbstractNestablePropertyAccessor:
+    //递归导航以返回嵌套属性路径的属性访问器
+    protected AbstractNestablePropertyAccessor getPropertyAccessorForPropertyPath(String propertyPath) {
+        int pos = PropertyAccessorUtils.getFirstNestedPropertySeparatorIndex(propertyPath);
+        // Handle nested properties recursively.
+        if (pos > -1) {
+            String nestedProperty = propertyPath.substring(0, pos);
+            String nestedPath = propertyPath.substring(pos + 1);
+            AbstractNestablePropertyAccessor nestedPa = getNestedPropertyAccessor(nestedProperty);
+            return nestedPa.getPropertyAccessorForPropertyPath(nestedPath);
+        } else {
+            return this;
+        }
+    }
+
+    //BeanUtils:
+    //获取指定属性的写方法的新方法参数对象。
+    public static MethodParameter getWriteMethodParameter(PropertyDescriptor pd) {
+        if (pd instanceof GenericTypeAwarePropertyDescriptor) {
+            return new MethodParameter(((GenericTypeAwarePropertyDescriptor) pd).getWriteMethodParameter());
+        }
+        else {
+            Method writeMethod = pd.getWriteMethod();
+            Assert.state(writeMethod != null, "No write method available");
+            return new MethodParameter(writeMethod, 0);
+        }
+    }
 
 }
