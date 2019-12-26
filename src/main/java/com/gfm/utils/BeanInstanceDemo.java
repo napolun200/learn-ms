@@ -2410,6 +2410,7 @@ public class BeanInstanceDemo {
             Map<String, Object> matchingBeans = findAutowireCandidates(beanName, type, descriptor);
             if (matchingBeans.isEmpty()) {
                 if (isRequired(descriptor)) {
+                    //提高NoSuchBeanDefinitionException或BeanNotOfRequiredTypeException不肯舍弃的依赖
                     raiseNoMatchingBeanFound(type, descriptor.getResolvableType(), descriptor);
                 }
                 return null;
@@ -2419,22 +2420,19 @@ public class BeanInstanceDemo {
             Object instanceCandidate;
 
             if (matchingBeans.size() > 1) {
+                //定给定的一组bean的自动装配候选人
                 autowiredBeanName = determineAutowireCandidate(matchingBeans, descriptor);
                 if (autowiredBeanName == null) {
                     if (isRequired(descriptor) || !indicatesMultipleBeans(type)) {
+                        //处理指定的不是唯一的场景:默认情况下,抛一个{NoUniqueBeanDefinitionException}
                         return descriptor.resolveNotUnique(descriptor.getResolvableType(), matchingBeans);
-                    }
-                    else {
-                        // In case of an optional Collection/Map, silently ignore a non-unique case:
-                        // possibly it was meant to be an empty collection of multiple regular beans
-                        // (before 4.3 in particular when we didn't even look for collection beans).
+                    }else {
                         return null;
                     }
                 }
                 instanceCandidate = matchingBeans.get(autowiredBeanName);
-            }
-            else {
-                // We have exactly one match.
+            }else {
+                //我们有一个匹配。
                 Map.Entry<String, Object> entry = matchingBeans.entrySet().iterator().next();
                 autowiredBeanName = entry.getKey();
                 instanceCandidate = entry.getValue();
@@ -3024,6 +3022,154 @@ public class BeanInstanceDemo {
         beans.forEach((beanName, instance) -> instancesToBeanNames.put(instance, beanName));
         return new DefaultListableBeanFactory.FactoryAwareOrderSourceProvider(instancesToBeanNames);
     }
+
+    //DefaultListableBeanFactory；
+    private void raiseNoMatchingBeanFound(
+            Class<?> type, ResolvableType resolvableType, DependencyDescriptor descriptor) throws BeansException {
+
+        checkBeanNotOfRequiredType(type, descriptor);
+
+        throw new NoSuchBeanDefinitionException(resolvableType,
+                "expected at least 1 bean which qualifies as autowire candidate. " +
+                        "Dependency annotations: " + ObjectUtils.nullSafeToString(descriptor.getAnnotations()));
+    }
+
+    //DefaultListableBeanFactory:
+    //提高BeanNotOfRequiredTypeException不肯舍弃的依赖性,如果适用,即如果bean将匹配的目标类型,是一个不公开代理
+    private void checkBeanNotOfRequiredType(Class<?> type, DependencyDescriptor descriptor) {
+        for (String beanName : this.beanDefinitionNames) {
+            RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
+            Class<?> targetType = mbd.getTargetType();
+            if (targetType != null && type.isAssignableFrom(targetType) &&
+                    isAutowireCandidate(beanName, mbd, descriptor, getAutowireCandidateResolver())) {
+                //可能一个代理干扰目标类型匹配-->抛出有意义的异常
+                Object beanInstance = getSingleton(beanName, false);
+                Class<?> beanType = (beanInstance != null && beanInstance.getClass() != NullBean.class ?
+                        beanInstance.getClass() : predictBeanType(beanName, mbd));
+                if (beanType != null && !type.isAssignableFrom(beanType)) {
+                    throw new BeanNotOfRequiredTypeException(beanName, type, beanType);
+                }
+            }
+        }
+
+        BeanFactory parent = getParentBeanFactory();
+        if (parent instanceof DefaultListableBeanFactory) {
+            ((DefaultListableBeanFactory) parent).checkBeanNotOfRequiredType(type, descriptor);
+        }
+    }
+
+
+    //DefaultListableBeanFactory:
+    //确定给定的一组bean的自动装配候选人
+    protected String determineAutowireCandidate(Map<String, Object> candidates, DependencyDescriptor descriptor) {
+        Class<?> requiredType = descriptor.getDependencyType();
+        //1>确定在给定的一组bean的主要候选人
+        String primaryCandidate = determinePrimaryCandidate(candidates, requiredType);
+        if (primaryCandidate != null) {
+            return primaryCandidate;
+        }
+        //2>确定给定的一组bean优先级最高的候选人
+        String priorityCandidate = determineHighestPriorityCandidate(candidates, requiredType);
+        if (priorityCandidate != null) {
+            return priorityCandidate;
+        }
+        // Fallback
+        for (Map.Entry<String, Object> entry : candidates.entrySet()) {
+            String candidateName = entry.getKey();
+            Object beanInstance = entry.getValue();
+            //Map<Class<?>, Object> resolvableDependencies = new ConcurrentHashMap<>(16)
+            //依赖类型到相应的自动注入值的映射
+            if ((beanInstance != null && this.resolvableDependencies.containsValue(beanInstance)) ||
+                    matchesBeanName(candidateName, descriptor.getDependencyName())) {
+                return candidateName;
+            }
+        }
+        return null;
+    }
+
+    //DefaultListableBeanFactory:
+    //确定在给定的一组bean的主要候选人
+    protected String determinePrimaryCandidate(Map<String, Object> candidates, Class<?> requiredType) {
+        String primaryBeanName = null;
+        for (Map.Entry<String, Object> entry : candidates.entrySet()) {
+            String candidateBeanName = entry.getKey();
+            Object beanInstance = entry.getValue();
+            if (isPrimary(candidateBeanName, beanInstance)) {
+                if (primaryBeanName != null) {
+                    boolean candidateLocal = containsBeanDefinition(candidateBeanName);
+                    boolean primaryLocal = containsBeanDefinition(primaryBeanName);
+                    if (candidateLocal && primaryLocal) {
+                        throw new NoUniqueBeanDefinitionException(requiredType, candidates.size(),
+                                "more than one 'primary' bean found among candidates: " + candidates.keySet());
+                    } else if (candidateLocal) {
+                        primaryBeanName = candidateBeanName;
+                    }
+                }else {
+                    primaryBeanName = candidateBeanName;
+                }
+            }
+        }
+        return primaryBeanName;
+    }
+
+
+    //DefaultListableBeanFactory:
+    //确定给定的一组bean优先级最高的候选人
+    protected String determineHighestPriorityCandidate(Map<String, Object> candidates, Class<?> requiredType) {
+        String highestPriorityBeanName = null;
+        Integer highestPriority = null;
+        for (Map.Entry<String, Object> entry : candidates.entrySet()) {
+            String candidateBeanName = entry.getKey();
+            Object beanInstance = entry.getValue();
+            if (beanInstance != null) {
+                Integer candidatePriority = getPriority(beanInstance);
+                if (candidatePriority != null) {
+                    if (highestPriorityBeanName != null) {
+                        if (candidatePriority.equals(highestPriority)) {
+                            throw new NoUniqueBeanDefinitionException(requiredType, candidates.size(),
+                                    "Multiple beans found with the same priority ('" + highestPriority +
+                                            "') among candidates: " + candidates.keySet());
+                        }else if (candidatePriority < highestPriority) {
+                            highestPriorityBeanName = candidateBeanName;
+                            highestPriority = candidatePriority;
+                        }
+                    }else {
+                        highestPriorityBeanName = candidateBeanName;
+                        highestPriority = candidatePriority;
+                    }
+                }
+            }
+        }
+        return highestPriorityBeanName;
+    }
+
+
+    //DefaultListableBeanFactory:
+    //确定给定的候选人的名字与bean名称或别名匹配存储在这个bean定义
+    protected boolean matchesBeanName(String beanName, @Nullable String candidateName) {
+        return (candidateName != null &&
+                (candidateName.equals(beanName) || ObjectUtils.containsElement(getAliases(beanName), candidateName)));
+    }
+
+    //DependencyDescriptor:
+    //处理指定的不是唯一的场景:默认情况下,抛一个{NoUniqueBeanDefinitionException}
+    public Object resolveNotUnique(ResolvableType type, Map<String, Object> matchingBeans) throws BeansException {
+        throw new NoUniqueBeanDefinitionException(type, matchingBeans.keySet());
+    }
+
+    //ConstructorResolver:
+    static InjectionPoint setCurrentInjectionPoint(@Nullable InjectionPoint injectionPoint) {
+        InjectionPoint old = currentInjectionPoint.get();
+        if (injectionPoint != null) {
+            currentInjectionPoint.set(injectionPoint);
+        }
+        else {
+            currentInjectionPoint.remove();
+        }
+        return old;
+    }
+
+
 
 
 
