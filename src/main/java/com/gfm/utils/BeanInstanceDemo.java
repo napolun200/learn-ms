@@ -1,6 +1,8 @@
 package com.gfm.utils;
 
 import com.gfm.service.UserService;
+import org.springframework.aop.TargetSource;
+import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.beans.*;
 import org.springframework.beans.factory.*;
 import org.springframework.beans.factory.config.*;
@@ -2321,6 +2323,62 @@ public class BeanInstanceDemo {
         }
     }
 
+    //ContextAnnotationAutowireCandidateResolver:
+    public Object getLazyResolutionProxyIfNecessary(DependencyDescriptor descriptor, @Nullable String beanName) {
+        return (isLazy(descriptor) ? buildLazyResolutionProxy(descriptor, beanName) : null);
+    }
+
+    //ContextAnnotationAutowireCandidateResolver:
+    protected Object buildLazyResolutionProxy(final DependencyDescriptor descriptor, final @Nullable String beanName) {
+        Assert.state(getBeanFactory() instanceof DefaultListableBeanFactory,
+                "BeanFactory needs to be a DefaultListableBeanFactory");
+        final DefaultListableBeanFactory beanFactory = (DefaultListableBeanFactory) getBeanFactory();
+        TargetSource ts = new TargetSource() {
+            @Override
+            public Class<?> getTargetClass() {
+                return descriptor.getDependencyType();
+            }
+            @Override
+            public boolean isStatic() {
+                return false;
+            }
+            @Override
+            public Object getTarget() {
+                Object target = beanFactory.doResolveDependency(descriptor, beanName, null, null);
+                if (target == null) {
+                    Class<?> type = getTargetClass();
+                    if (Map.class == type) {
+                        return Collections.emptyMap();
+                    }
+                    else if (List.class == type) {
+                        return Collections.emptyList();
+                    }
+                    else if (Set.class == type || Collection.class == type) {
+                        return Collections.emptySet();
+                    }
+                    throw new NoSuchBeanDefinitionException(descriptor.getResolvableType(),
+                            "Optional dependency not present for lazy injection point");
+                }
+                return target;
+            }
+            @Override
+            public void releaseTarget(Object target) {
+            }
+        };
+        ProxyFactory pf = new ProxyFactory();
+        pf.setTargetSource(ts);
+        Class<?> dependencyType = descriptor.getDependencyType();
+        if (dependencyType.isInterface()) {
+            pf.addInterface(dependencyType);
+        }
+        return pf.getProxy(beanFactory.getBeanClassLoader());
+    }
+
+    //DefaultListableBeanFactory.Jsr330Factory:
+    public Object createDependencyProvider(DependencyDescriptor descriptor, @Nullable String beanName) {
+        return new DefaultListableBeanFactory.Jsr330Factory.Jsr330Provider(descriptor, beanName);
+    }
+
 
     //DependencyDescriptor:
     //初始化基础方法参数的参数名称发现(如果有的话)
@@ -2740,6 +2798,74 @@ public class BeanInstanceDemo {
         return (T) convertedValue;
     }
 
+    //TypeConverterDelegate:
+    //使用给定的属性编辑器将值转换为所需的类型(如果需要从字符串转换)
+    private Object doConvertValue(@Nullable Object oldValue, @Nullable Object newValue,
+                                  @Nullable Class<?> requiredType, @Nullable PropertyEditor editor) {
+
+        Object convertedValue = newValue;
+
+        if (editor != null && !(convertedValue instanceof String)) {
+            //不是字符串->使用PropertyEditor的setValue。对于标准的propertyeditor，它将返回相同的对象;我们
+            //只是想让特殊的propertyeditor覆盖setValue，以便将类型从非字符串值转换为所需的类型。
+            try {
+                editor.setValue(convertedValue);
+                Object newConvertedValue = editor.getValue();
+                if (newConvertedValue != convertedValue) {
+                    convertedValue = newConvertedValue;
+                    //重置PropertyEditor:它已经做了正确的转换。不要在setAsText调用中再次使用它。
+                    editor = null;
+                }
+            }catch (Exception ex) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("PropertyEditor [" + editor.getClass().getName() + "] does not support setValue call", ex);
+                }
+            }
+        }
+
+        Object returnValue = convertedValue;
+
+        if (requiredType != null && !requiredType.isArray() && convertedValue instanceof String[]) {
+            //将字符串数组转换为逗号分隔的字符串。仅当之前没有PropertyEditor转换字符串数组时才适用。CSV字符
+            //串将被传递到PropertyEditor的setAsText方法中(如果有的话)。
+            if (logger.isTraceEnabled()) {
+                logger.trace("Converting String array to comma-delimited String [" + convertedValue + "]");
+            }
+            convertedValue = StringUtils.arrayToCommaDelimitedString((String[]) convertedValue);
+        }
+
+        if (convertedValue instanceof String) {
+            if (editor != null) {
+                //对于字符串值，使用PropertyEditor的setAsText
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Converting String to [" + requiredType + "] using property editor [" + editor + "]");
+                }
+                String newTextValue = (String) convertedValue;
+                return doConvertTextValue(oldValue, newTextValue, editor);
+            }
+            else if (String.class == requiredType) {
+                returnValue = convertedValue;
+            }
+        }
+
+        return returnValue;
+    }
+
+
+    //TypeConverterDelegate:
+    //查找给定类型的默认编辑器
+    private PropertyEditor findDefaultEditor(@Nullable Class<?> requiredType) {
+        PropertyEditor editor = null;
+        if (requiredType != null) {
+            // No custom editor -> check BeanWrapperImpl's default editors.
+            editor = this.propertyEditorRegistry.getDefaultEditor(requiredType);
+            if (editor == null && String.class != requiredType) {
+                // No BeanWrapper default editor -> check standard JavaBean editor.
+                editor = BeanUtils.findEditorByConvention(requiredType);
+            }
+        }
+        return editor;
+    }
 
     //DefaultListableBeanFactory:
     private Object resolveMultipleBeans(DependencyDescriptor descriptor, @Nullable String beanName,
