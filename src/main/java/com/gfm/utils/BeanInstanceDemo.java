@@ -589,6 +589,24 @@ public class BeanInstanceDemo {
         return canonicalName;
     }
 
+    //BeanFactoryUtils:
+    //返回实际的bean名称，去掉工厂Bean的引用前缀&
+    public static String transformedBeanName(String name) {
+        Assert.notNull(name, "'name' must not be null");
+        //FACTORY_BEAN_PREFIX = "&", 如果beanName没有"&"前缀，就直接返回
+        if (!name.startsWith(BeanFactory.FACTORY_BEAN_PREFIX)) {
+            return name;
+        }
+        //如果beanName是工厂bean, 含有"&"前缀，就去除这个前缀后返回
+        return transformedBeanNameCache.computeIfAbsent(name, beanName -> {
+            do {
+                beanName = beanName.substring(BeanFactory.FACTORY_BEAN_PREFIX.length());
+            }while (beanName.startsWith(BeanFactory.FACTORY_BEAN_PREFIX));
+
+            return beanName;
+        });
+    }
+
     //AbstractBeanFactory:
     private void copyRelevantMergedBeanDefinitionCaches(RootBeanDefinition previous, RootBeanDefinition mbd) {
         if (ObjectUtils.nullSafeEquals(mbd.getBeanClassName(), previous.getBeanClassName()) &&
@@ -1041,6 +1059,86 @@ public class BeanInstanceDemo {
             }
         }
         return (T) bean;
+    }
+
+
+    //StaticListableBeanFactory:
+    public Object getBean(String name, Object... args) throws BeansException {
+        if (!ObjectUtils.isEmpty(args)) {
+            throw new UnsupportedOperationException(
+                    "StaticListableBeanFactory does not support explicit bean creation arguments");
+        }
+        return getBean(name);
+    }
+
+    //StaticListableBeanFactory:
+    public <T> T getBean(String name, @Nullable Class<T> requiredType) throws BeansException {
+        Object bean = getBean(name);
+        if (requiredType != null && !requiredType.isInstance(bean)) {
+            throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+        }
+        return (T) bean;
+    }
+
+    //StaticListableBeanFactory:
+    public Object getBean(String name) throws BeansException {
+        String beanName = BeanFactoryUtils.transformedBeanName(name);
+        //Map<String, Object> beans; 从bean名称映射到bean实例
+        Object bean = this.beans.get(beanName);
+
+        if (bean == null) {
+            throw new NoSuchBeanDefinitionException(beanName,
+                    "Defined beans are [" + StringUtils.collectionToCommaDelimitedString(this.beans.keySet()) + "]");
+        }
+
+        //如果bean不是工厂，不要让调用代码尝试取消对bean工厂的引用
+        if (BeanFactoryUtils.isFactoryDereference(name) && !(bean instanceof FactoryBean)) {
+            throw new BeanIsNotAFactoryException(beanName, bean.getClass());
+        }
+
+        if (bean instanceof FactoryBean && !BeanFactoryUtils.isFactoryDereference(name)) {
+            try {
+                Object exposedObject = ((FactoryBean<?>) bean).getObject();
+                if (exposedObject == null) {
+                    throw new BeanCreationException(beanName, "FactoryBean exposed null object");
+                }
+                return exposedObject;
+            }catch (Exception ex) {
+                throw new BeanCreationException(beanName, "FactoryBean threw exception on object creation", ex);
+            }
+        }else {
+            return bean;
+        }
+    }
+
+
+
+
+    //JndiLocatorSupport:
+    //通过JndiTemplate对给定名称执行实际的JNDI查找。
+    //如果名称不是以“java:comp/env/”开头，则在“resourceRef”设置为“true”时添加此前缀。
+    protected <T> T lookup(String jndiName, @Nullable Class<T> requiredType) throws NamingException {
+        Assert.notNull(jndiName, "'jndiName' must not be null");
+        String convertedName = convertJndiName(jndiName);
+        T jndiObject;
+        try {
+            jndiObject = getJndiTemplate().lookup(convertedName, requiredType);
+        }catch (NamingException ex) {
+            if (!convertedName.equals(jndiName)) {
+                //尝试退回到最初指定的名称
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Converted JNDI name [" + convertedName +
+                            "] not found - trying original name [" + jndiName + "]. " + ex);
+                }
+                jndiObject = getJndiTemplate().lookup(jndiName, requiredType);
+            }else {
+                throw ex;
+            }
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Located object with JNDI name [" + convertedName + "]");
+        }
+        return jndiObject;
     }
 
     //DefaultSingletonBeanRegistry:
@@ -2799,6 +2897,67 @@ public class BeanInstanceDemo {
     }
 
     //TypeConverterDelegate:
+    private Object convertToTypedArray(Object input, @Nullable String propertyName, Class<?> componentType) {
+        if (input instanceof Collection) {
+            //将集合元素转换为数组元素
+            Collection<?> coll = (Collection<?>) input;
+            Object result = Array.newInstance(componentType, coll.size());
+            int i = 0;
+            for (Iterator<?> it = coll.iterator(); it.hasNext(); i++) {
+                Object value = convertIfNecessary(
+                        buildIndexedPropertyName(propertyName, i), null, it.next(), componentType);
+                Array.set(result, i, value);
+            }
+            return result;
+        }else if (input.getClass().isArray()) {
+            //转换数组元素，如果必要的话
+            if (componentType.equals(input.getClass().getComponentType()) &&
+                    !this.propertyEditorRegistry.hasCustomEditorForElement(componentType, propertyName)) {
+                return input;
+            }
+            int arrayLength = Array.getLength(input);
+            Object result = Array.newInstance(componentType, arrayLength);
+            for (int i = 0; i < arrayLength; i++) {
+                Object value = convertIfNecessary(
+                        buildIndexedPropertyName(propertyName, i), null, Array.get(input, i), componentType);
+                Array.set(result, i, value);
+            }
+            return result;
+        }else {
+            //普通值:将其转换为具有单个组件的数组
+            Object result = Array.newInstance(componentType, 1);
+            Object value = convertIfNecessary(
+                    buildIndexedPropertyName(propertyName, 0), null, input, componentType);
+            Array.set(result, 0, value);
+            return result;
+        }
+    }
+
+    //PropertyEditorRegistrySupport:
+    //确定此注册表是否包含指定数组/集合元素的自定义编辑器。
+    public boolean hasCustomEditorForElement(@Nullable Class<?> elementType, @Nullable String propertyPath) {
+        if (propertyPath != null && this.customEditorsForPath != null) {
+            for (Map.Entry<String, PropertyEditorRegistrySupport.CustomEditorHolder> entry : this.customEditorsForPath.entrySet()) {
+                if (PropertyAccessorUtils.matchesProperty(entry.getKey(), propertyPath) &&
+                        entry.getValue().getPropertyEditor(elementType) != null) {
+                    return true;
+                }
+            }
+        }
+        // No property-specific editor -> check type-specific editor.
+        return (elementType != null && this.customEditors != null && this.customEditors.containsKey(elementType));
+    }
+
+    //TypeConverterDelegate:
+    private String buildIndexedPropertyName(@Nullable String propertyName, int index) {
+        //1>PROPERTY_KEY_PREFIX = "["
+        //2>PROPERTY_KEY_SUFFIX = "]"
+        return (propertyName != null ?
+                propertyName + PropertyAccessor.PROPERTY_KEY_PREFIX + index + PropertyAccessor.PROPERTY_KEY_SUFFIX :
+                null);
+    }
+
+    //TypeConverterDelegate:
     //使用给定的属性编辑器将值转换为所需的类型(如果需要从字符串转换)
     private Object doConvertValue(@Nullable Object oldValue, @Nullable Object newValue,
                                   @Nullable Class<?> requiredType, @Nullable PropertyEditor editor) {
@@ -2842,8 +3001,7 @@ public class BeanInstanceDemo {
                 }
                 String newTextValue = (String) convertedValue;
                 return doConvertTextValue(oldValue, newTextValue, editor);
-            }
-            else if (String.class == requiredType) {
+            }else if (String.class == requiredType) {
                 returnValue = convertedValue;
             }
         }
@@ -2851,6 +3009,18 @@ public class BeanInstanceDemo {
         return returnValue;
     }
 
+    private Object doConvertTextValue(@Nullable Object oldValue, String newTextValue, PropertyEditor editor) {
+        try {
+            editor.setValue(oldValue);
+        }catch (Exception ex) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("PropertyEditor [" + editor.getClass().getName() + "] does not support setValue call", ex);
+            }
+            //Swallow and proceed. 忍受并进行下去
+        }
+        editor.setAsText(newTextValue);
+        return editor.getValue();
+    }
 
     //TypeConverterDelegate:
     //查找给定类型的默认编辑器
