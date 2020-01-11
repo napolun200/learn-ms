@@ -2763,6 +2763,78 @@ public class BeanInstanceDemo {
         return this.scopes.get(scopeName);
     }
 
+
+
+
+
+
+    //DefaultListableBeanFactory:
+    //确定给定bean集合中的主要候选对象
+    protected String determinePrimaryCandidate(Map<String, Object> candidates, Class<?> requiredType) {
+        String primaryBeanName = null;
+        for (Map.Entry<String, Object> entry : candidates.entrySet()) {
+            String candidateBeanName = entry.getKey();
+            Object beanInstance = entry.getValue();
+            if (isPrimary(candidateBeanName, beanInstance)) {
+                if (primaryBeanName != null) {
+                    //在beanDefinitionMap是否包含此beanName
+                    boolean candidateLocal = containsBeanDefinition(candidateBeanName);
+                    boolean primaryLocal = containsBeanDefinition(primaryBeanName);
+                    if (candidateLocal && primaryLocal) {
+                        throw new NoUniqueBeanDefinitionException(requiredType, candidates.size(),
+                                "more than one 'primary' bean found among candidates: " + candidates.keySet());
+                    }else if (candidateLocal) {
+                        primaryBeanName = candidateBeanName;
+                    }
+                }else {
+                    primaryBeanName = candidateBeanName;
+                }
+            }
+        }
+        return primaryBeanName;
+    }
+
+    //DefaultListableBeanFactory:
+    //确定给定bean集合中具有最高优先级的候选bean。基于{@javax.annotation.Priority}，最低的值具有最高的优先级
+    protected String determineHighestPriorityCandidate(Map<String, Object> candidates, Class<?> requiredType) {
+        String highestPriorityBeanName = null;
+        Integer highestPriority = null;
+        for (Map.Entry<String, Object> entry : candidates.entrySet()) {
+            String candidateBeanName = entry.getKey();
+            Object beanInstance = entry.getValue();
+            if (beanInstance != null) {
+                //获取给定bean的优先级
+                Integer candidatePriority = getPriority(beanInstance);
+                if (candidatePriority != null) {
+                    if (highestPriorityBeanName != null) {
+                        if (candidatePriority.equals(highestPriority)) {
+                            throw new NoUniqueBeanDefinitionException(requiredType, candidates.size(),
+                                    "Multiple beans found with the same priority ('" + highestPriority +
+                                            "') among candidates: " + candidates.keySet());
+                        } else if (candidatePriority < highestPriority) {
+                            highestPriorityBeanName = candidateBeanName;
+                            highestPriority = candidatePriority;
+                        }
+                    } else {
+                        highestPriorityBeanName = candidateBeanName;
+                        highestPriority = candidatePriority;
+                    }
+                }
+            }
+        }
+        return highestPriorityBeanName;
+    }
+
+
+
+
+
+
+    //TypeConverterSupport:
+    public <T> T convertIfNecessary(@Nullable Object value, @Nullable Class<T> requiredType) throws TypeMismatchException {
+        return convertIfNecessary(value, requiredType, TypeDescriptor.valueOf(requiredType));
+    }
+
     //TypeConverterSupport:
     public <T> T convertIfNecessary(@Nullable Object value, @Nullable Class<T> requiredType,
                                     @Nullable TypeDescriptor typeDescriptor) throws TypeMismatchException {
@@ -2793,9 +2865,10 @@ public class BeanInstanceDemo {
             TypeDescriptor sourceTypeDesc = TypeDescriptor.forObject(newValue);
             if (conversionService.canConvert(sourceTypeDesc, typeDescriptor)) {
                 try {
+                    //将给定的{source}转换为指定的{targetType}
                     return (T) conversionService.convert(newValue, sourceTypeDesc, typeDescriptor);
                 }catch (ConversionFailedException ex) {
-                    // fallback to default conversion logic below
+                    //回调到默认转换逻辑如下
                     conversionAttemptEx = ex;
                 }
             }
@@ -2816,8 +2889,10 @@ public class BeanInstanceDemo {
                 }
             }
             if (editor == null) {
+                //获取默认的编辑器
                 editor = findDefaultEditor(requiredType);
             }
+            //去转换属性值
             convertedValue = doConvertValue(oldValue, convertedValue, requiredType, editor);
         }
 
@@ -2835,7 +2910,7 @@ public class BeanInstanceDemo {
                     }
                     return (T) convertToTypedArray(convertedValue, propertyName, requiredType.getComponentType());
                 }else if (convertedValue instanceof Collection) {
-                    // Convert elements to target type, if determined.
+                    //如果确定，将元素转换为目标类型
                     convertedValue = convertToTypedCollection(
                             (Collection<?>) convertedValue, propertyName, requiredType, typeDescriptor);
                     standardConversion = true;
@@ -2845,10 +2920,12 @@ public class BeanInstanceDemo {
                             (Map<?, ?>) convertedValue, propertyName, requiredType, typeDescriptor);
                     standardConversion = true;
                 }
+
                 if (convertedValue.getClass().isArray() && Array.getLength(convertedValue) == 1) {
                     convertedValue = Array.get(convertedValue, 0);
                     standardConversion = true;
                 }
+
                 if (String.class == requiredType && ClassUtils.isPrimitiveOrWrapper(convertedValue.getClass())) {
                     //我们可以限制任何原始值
                     return (T) convertedValue.toString();
@@ -2856,6 +2933,7 @@ public class BeanInstanceDemo {
                     if (conversionAttemptEx == null && !requiredType.isInterface() && !requiredType.isEnum()) {
                         try {
                             Constructor<T> strCtor = requiredType.getConstructor(String.class);
+                            //使用给定构造函数实例化类
                             return BeanUtils.instantiateClass(strCtor, convertedValue);
                         }catch (NoSuchMethodException ex) {
                             // proceed with field lookup
@@ -2873,9 +2951,11 @@ public class BeanInstanceDemo {
                         //它是一个空的enum标识符:将enum值重置为null
                         return null;
                     }
+                    //尝试将字符串转换成枚举
                     convertedValue = attemptToConvertStringToEnum(requiredType, trimmedValue, convertedValue);
                     standardConversion = true;
                 }else if (convertedValue instanceof Number && Number.class.isAssignableFrom(requiredType)) {
+                    //将数字转换成对应的包装类
                     convertedValue = NumberUtils.convertNumberToTargetClass(
                             (Number) convertedValue, (Class<Number>) requiredType);
                     standardConversion = true;
@@ -2895,6 +2975,8 @@ public class BeanInstanceDemo {
                     //以前没有尝试使用ConversionService，可能找到了自定义编辑器，但编辑器无法生成所需的类型
                     TypeDescriptor sourceTypeDesc = TypeDescriptor.forObject(newValue);
                     if (conversionService.canConvert(sourceTypeDesc, typeDescriptor)) {
+                        //将给定的{source}转换为指定的{targetType}。
+                        //类型描述符提供关于将要发生转换的源和目标位置的额外上下文，通常是对象字段或属性位置
                         return (T) conversionService.convert(newValue, sourceTypeDesc, typeDescriptor);
                     }
                 }
@@ -3830,9 +3912,184 @@ public class BeanInstanceDemo {
 
 
 
+    //AbstractAutowireCapableBeanFactory:
+    //确定给定bean的候选构造函数，检查所有已注册的构造函数
+    protected Constructor<?>[] determineConstructorsFromBeanPostProcessors(@Nullable Class<?> beanClass, String beanName)
+            throws BeansException {
+
+        if (beanClass != null && hasInstantiationAwareBeanPostProcessors()) {
+            for (BeanPostProcessor bp : getBeanPostProcessors()) {
+                if (bp instanceof SmartInstantiationAwareBeanPostProcessor) {
+                    SmartInstantiationAwareBeanPostProcessor ibp = (SmartInstantiationAwareBeanPostProcessor) bp;
+                    Constructor<?>[] ctors = ibp.determineCandidateConstructors(beanClass, beanName);
+                    if (ctors != null) {
+                        return ctors;
+                    }
+                }
+            }
+        }
+        return null;
+    }
 
 
 
+    //AbstractAutowireCapableBeanFactory:
+    //将MergedBeanDefinitionPostProcessors应用于指定的bean定义，调用它们的{postProcessMergedBeanDefinition}方法
+    protected void applyMergedBeanDefinitionPostProcessors(RootBeanDefinition mbd, Class<?> beanType, String beanName) {
+        for (BeanPostProcessor bp : getBeanPostProcessors()) {
+            if (bp instanceof MergedBeanDefinitionPostProcessor) {
+                MergedBeanDefinitionPostProcessor bdp = (MergedBeanDefinitionPostProcessor) bp;
+                bdp.postProcessMergedBeanDefinition(mbd, beanType, beanName);
+            }
+        }
+    }
+
+
+    //DefaultSingletonBeanRegistry:
+    //如果需要，添加指定的单例工厂来构建指定的单例
+    protected void addSingletonFactory(String beanName, ObjectFactory<?> singletonFactory) {
+        Assert.notNull(singletonFactory, "Singleton factory must not be null");
+        synchronized (this.singletonObjects) {
+            //Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256)
+            //单例对象的缓存:从bean名到bean实例
+            if (!this.singletonObjects.containsKey(beanName)) {
+                //Map<String, ObjectFactory<?>> singletonFactories = new HashMap<>(16);
+                //单例工厂的缓存:从bean名到ObjectFactory
+                this.singletonFactories.put(beanName, singletonFactory);
+                //Map<String, Object> earlySingletonObjects = new HashMap<>(16);
+                //早期单例对象的缓存:从bean名到bean实例
+                this.earlySingletonObjects.remove(beanName);
+                //Set<String> registeredSingletons = new LinkedHashSet<>(256);
+                //已注册的单例集合，包含按注册顺序排列的bean名称
+                this.registeredSingletons.add(beanName);
+            }
+        }
+    }
+
+
+
+    //AbstractAutowireCapableBeanFactory:
+    //初始化给定的bean实例，应用工厂回调以及init方法和bean后处理器
+    protected Object initializeBean(final String beanName, final Object bean, @Nullable RootBeanDefinition mbd) {
+        if (System.getSecurityManager() != null) {
+            AccessController.doPrivileged((PrivilegedAction<Object>) () -> {
+                invokeAwareMethods(beanName, bean);
+                return null;
+            }, getAccessControlContext());
+        }else {
+            //调用 awareMethod 方法
+            invokeAwareMethods(beanName, bean);
+        }
+
+        Object wrappedBean = bean;
+        if (mbd == null || !mbd.isSynthetic()) {
+            //调用BeanPostProcessorsBefore的方法
+            wrappedBean = applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName);
+        }
+
+        try {
+            //调用init初始化方法
+            invokeInitMethods(beanName, wrappedBean, mbd);
+        }catch (Throwable ex) {
+            throw new BeanCreationException(
+                    (mbd != null ? mbd.getResourceDescription() : null),
+                    beanName, "Invocation of init method failed", ex);
+        }
+        if (mbd == null || !mbd.isSynthetic()) {
+            //调用BeanPostProcessorsAfter的方法
+            wrappedBean = applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName);
+        }
+
+        return wrappedBean;
+    }
+
+
+    //DefaultSingletonBeanRegistry:
+    //返回依赖于指定bean的所有bean的名称(如果有的话)
+    public String[] getDependentBeans(String beanName) {
+        //Map<String, Set<String>> dependentBeanMap = new ConcurrentHashMap<>(64)
+        //从属bean名称之间的映射:从bean名称映射到从属bean名称集
+        Set<String> dependentBeans = this.dependentBeanMap.get(beanName);
+        if (dependentBeans == null) {
+            return new String[0];
+        }
+        synchronized (this.dependentBeanMap) {
+            return StringUtils.toStringArray(dependentBeans);
+        }
+    }
+
+    //AbstractBeanFactory:
+    //将给定的bean添加到工厂的一次性bean列表中，注册它的一次性bean接口，或者在工厂关闭时调用给定销毁方法(如果适用)
+    //只适用于单例bean对象。
+    protected void registerDisposableBeanIfNecessary(String beanName, Object bean, RootBeanDefinition mbd) {
+        AccessControlContext acc = (System.getSecurityManager() != null ? getAccessControlContext() : null);
+        if (!mbd.isPrototype() && requiresDestruction(bean, mbd)) {
+            if (mbd.isSingleton()) {
+                //注册一个对给定bean执行所有销毁工作的处置bean实现
+                registerDisposableBean(beanName,
+                        new DisposableBeanAdapter(bean, beanName, mbd, getBeanPostProcessors(), acc));
+            } else {
+                // A bean with a custom scope...
+                Scope scope = this.scopes.get(mbd.getScope());
+                if (scope == null) {
+                    throw new IllegalStateException("No Scope registered for scope name '" + mbd.getScope() + "'");
+                }
+                //注册bean销毁回调, 用一个线程处理回调
+                //Map<String, Runnable> requestDestructionCallbacks = new LinkedHashMap(8)
+                scope.registerDestructionCallback(beanName,
+                        new DisposableBeanAdapter(bean, beanName, mbd, getBeanPostProcessors(), acc));
+            }
+        }
+    }
+
+    //DisposableBeanAdapter:
+    //为给定的bean创建一个新的可处理的bean适配器
+    public DisposableBeanAdapter(Object bean, String beanName, RootBeanDefinition beanDefinition,
+                                 List<BeanPostProcessor> postProcessors, @Nullable AccessControlContext acc) {
+
+        Assert.notNull(bean, "Disposable bean must not be null");
+        this.bean = bean;
+        this.beanName = beanName;
+        this.invokeDisposableBean =
+                (this.bean instanceof DisposableBean && !beanDefinition.isExternallyManagedDestroyMethod("destroy"));
+        this.nonPublicAccessAllowed = beanDefinition.isNonPublicAccessAllowed();
+        this.acc = acc;
+        //如果给定beanDefinition的“destroyMethodName”属性的当前值是{AbstractBeanDefinition#INFER_METHOD}，
+        //那么尝试推断一个销毁方法
+        String destroyMethodName = inferDestroyMethodIfNecessary(bean, beanDefinition);
+        if (destroyMethodName != null && !(this.invokeDisposableBean && "destroy".equals(destroyMethodName)) &&
+                !beanDefinition.isExternallyManagedDestroyMethod(destroyMethodName)) {
+            this.destroyMethodName = destroyMethodName;
+            Method destroyMethod = determineDestroyMethod(destroyMethodName);
+            if (destroyMethod == null) {
+                if (beanDefinition.isEnforceDestroyMethod()) {
+                    throw new BeanDefinitionValidationException("Could not find a destroy method named '" +
+                            destroyMethodName + "' on bean with name '" + beanName + "'");
+                }
+            }else {
+                Class<?>[] paramTypes = destroyMethod.getParameterTypes();
+                if (paramTypes.length > 1) {
+                    throw new BeanDefinitionValidationException("Method '" + destroyMethodName + "' of bean '" +
+                            beanName + "' has more than one parameter - not supported as destroy method");
+                }else if (paramTypes.length == 1 && boolean.class != paramTypes[0]) {
+                    throw new BeanDefinitionValidationException("Method '" + destroyMethodName + "' of bean '" +
+                            beanName + "' has a non-boolean parameter - not supported as destroy method");
+                }
+                destroyMethod = ClassUtils.getInterfaceMethodIfPossible(destroyMethod);
+            }
+            this.destroyMethod = destroyMethod;
+        }
+        this.beanPostProcessors = filterPostProcessors(postProcessors, bean);
+    }
+
+    //DefaultSingletonBeanRegistry:
+    public void registerDisposableBean(String beanName, DisposableBean bean) {
+        //Map<String, Object> disposableBeans = new LinkedHashMap<>()
+        //一次性bean实例:bean名称到一次性bean实例
+        synchronized (this.disposableBeans) {
+            this.disposableBeans.put(beanName, bean);
+        }
+    }
 
 
 
@@ -3857,6 +4114,7 @@ public class BeanInstanceDemo {
             for (BeanPostProcessor bp : getBeanPostProcessors()) {
                 if (bp instanceof InstantiationAwareBeanPostProcessor) {
                     InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+                    //调用postProcessAfter方法
                     if (!ibp.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName)) {
                         continueWithPropertyPopulation = false;
                         break;
@@ -3873,6 +4131,7 @@ public class BeanInstanceDemo {
         PropertyValues pvs = (mbd.hasPropertyValues() ? mbd.getPropertyValues() : null);
         //依赖注入开始，首先处理autowire自动装配的注入
         int resolvedAutowireMode = mbd.getResolvedAutowireMode();
+        //AUTOWIRE_BY_NAME = 1;  AUTOWIRE_BY_TYPE = 2
         if (resolvedAutowireMode == AUTOWIRE_BY_NAME || resolvedAutowireMode == AUTOWIRE_BY_TYPE) {
             MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
             //1>对autowire自动装配的处理，根据Bean名称自动装配注入
@@ -3931,10 +4190,341 @@ public class BeanInstanceDemo {
 
 
     //AbstractAutowireCapableBeanFactory:
+    //从给定的BeanWrapper中提取一组过滤过的PropertyDescriptors，
+    //排除被忽略的依赖项类型或在被忽略的依赖项接口上定义的属性
+    protected PropertyDescriptor[] filterPropertyDescriptorsForDependencyCheck(BeanWrapper bw, boolean cache) {
+        //ConcurrentMap<Class<?>, PropertyDescriptor[]> filteredPropertyDescriptorsCache=new ConcurrentHashMap<>()
+        //筛选后的PropertyDescriptors的缓存:bean类到PropertyDescriptor数组
+        PropertyDescriptor[] filtered = this.filteredPropertyDescriptorsCache.get(bw.getWrappedClass());
+        if (filtered == null) {
+            filtered = filterPropertyDescriptorsForDependencyCheck(bw);
+            if (cache) {
+                PropertyDescriptor[] existing =
+                        this.filteredPropertyDescriptorsCache.putIfAbsent(bw.getWrappedClass(), filtered);
+                if (existing != null) {
+                    filtered = existing;
+                }
+            }
+        }
+        return filtered;
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    protected PropertyDescriptor[] filterPropertyDescriptorsForDependencyCheck(BeanWrapper bw) {
+        List<PropertyDescriptor> pds = new ArrayList<>(Arrays.asList(bw.getPropertyDescriptors()));
+        pds.removeIf(this::isExcludedFromDependencyCheck);
+        return pds.toArray(new PropertyDescriptor[0]);
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    //确定给定的bean属性是否被排除在依赖项检查之外。此实现排除由CGLIB定义的属性，
+    //以及其类型与被忽略的依赖项类型相匹配或由被忽略的依赖项接口定义的属性。
+    protected boolean isExcludedFromDependencyCheck(PropertyDescriptor pd) {
+        return (AutowireUtils.isExcludedFromDependencyCheck(pd) ||
+                this.ignoredDependencyTypes.contains(pd.getPropertyType()) ||
+                AutowireUtils.isSetterDefinedInInterface(pd, this.ignoredDependencyInterfaces));
+    }
+
+
+
+
+    //AbstractAutowireCapableBeanFactory:
+    //如果需要，执行一个依赖项检查，检查是否设置了所有公开的属性。依赖项检查可以是对象(协作bean)、
+    //简单(原语和字符串)或全部(两者)
+    protected void checkDependencies(
+            String beanName, AbstractBeanDefinition mbd, PropertyDescriptor[] pds, @Nullable PropertyValues pvs)
+            throws UnsatisfiedDependencyException {
+
+        int dependencyCheck = mbd.getDependencyCheck();
+        for (PropertyDescriptor pd : pds) {
+            if (pd.getWriteMethod() != null && (pvs == null || !pvs.contains(pd.getName()))) {
+                boolean isSimple = BeanUtils.isSimpleProperty(pd.getPropertyType());
+                boolean unsatisfied = (dependencyCheck == AbstractBeanDefinition.DEPENDENCY_CHECK_ALL) ||
+                        (isSimple && dependencyCheck == AbstractBeanDefinition.DEPENDENCY_CHECK_SIMPLE) ||
+                        (!isSimple && dependencyCheck == AbstractBeanDefinition.DEPENDENCY_CHECK_OBJECTS);
+                if (unsatisfied) {
+                    throw new UnsatisfiedDependencyException(mbd.getResourceDescription(), beanName, pd.getName(),
+                            "Set this property value or disable dependency checking for this bean.");
+                }
+            }
+        }
+    }
+
+
+
+
+
+    //AbstractAutowireCapableBeanFactory:
+    //应用给定的属性值，将任何运行时引用解析到此bean工厂中的其他bean。必须使用深拷贝，所以我们不会永久修改这个属性
+    protected void applyPropertyValues(String beanName, BeanDefinition mbd, BeanWrapper bw, PropertyValues pvs) {
+        if (pvs.isEmpty()) {
+            return;
+        }
+
+        if (System.getSecurityManager() != null && bw instanceof BeanWrapperImpl) {
+            ((BeanWrapperImpl) bw).setSecurityContext(getAccessControlContext());
+        }
+
+        MutablePropertyValues mpvs = null;
+        List<PropertyValue> original;
+
+        if (pvs instanceof MutablePropertyValues) {
+            mpvs = (MutablePropertyValues) pvs;
+            if (mpvs.isConverted()) {
+                //快捷方式:按原样使用预转换的值
+                try {
+                    bw.setPropertyValues(mpvs);
+                    return;
+                }catch (BeansException ex) {
+                    throw new BeanCreationException(
+                            mbd.getResourceDescription(), beanName, "Error setting property values", ex);
+                }
+            }
+            original = mpvs.getPropertyValueList();
+        }else {
+            original = Arrays.asList(pvs.getPropertyValues());
+        }
+
+        TypeConverter converter = getCustomTypeConverter();
+        if (converter == null) {
+            converter = bw;
+        }
+        BeanDefinitionValueResolver valueResolver = new BeanDefinitionValueResolver(this, beanName, mbd, converter);
+
+        //创建一个深度副本，解析所有对值的引用
+        List<PropertyValue> deepCopy = new ArrayList<>(original.size());
+        boolean resolveNecessary = false;
+        for (PropertyValue pv : original) {
+            if (pv.isConverted()) {
+                deepCopy.add(pv);
+            }else {
+                String propertyName = pv.getName();
+                Object originalValue = pv.getValue();
+                if (originalValue == AutowiredPropertyMarker.INSTANCE) {
+                    Method writeMethod = bw.getPropertyDescriptor(propertyName).getWriteMethod();
+                    if (writeMethod == null) {
+                        throw new IllegalArgumentException("Autowire marker for property without write method: " + pv);
+                    }
+                    originalValue = new DependencyDescriptor(new MethodParameter(writeMethod, 0), true);
+                }
+                //解析属性值
+                Object resolvedValue = valueResolver.resolveValueIfNecessary(pv, originalValue);
+                Object convertedValue = resolvedValue;
+                boolean convertible = bw.isWritableProperty(propertyName) &&
+                        !PropertyAccessorUtils.isNestedOrIndexedProperty(propertyName);
+                if (convertible) {
+                    //转换属性
+                    convertedValue = convertForProperty(resolvedValue, propertyName, bw, converter);
+                }
+                //可能将转换后的值存储在合并的bean定义中，以避免对每个创建的bean实例进行重新转换
+                if (resolvedValue == originalValue) {
+                    if (convertible) {
+                        pv.setConvertedValue(convertedValue);
+                    }
+                    deepCopy.add(pv);
+                }else if (convertible && originalValue instanceof TypedStringValue &&
+                        !((TypedStringValue) originalValue).isDynamic() &&
+                        !(convertedValue instanceof Collection || ObjectUtils.isArray(convertedValue))) {
+                    pv.setConvertedValue(convertedValue);
+                    deepCopy.add(pv);
+                }else {
+                    resolveNecessary = true;
+                    deepCopy.add(new PropertyValue(pv, convertedValue));
+                }
+            }
+        }
+        if (mpvs != null && !resolveNecessary) {
+            mpvs.setConverted();
+        }
+
+        try {
+            bw.setPropertyValues(new MutablePropertyValues(deepCopy));
+        }catch (BeansException ex) {
+            throw new BeanCreationException(
+                    mbd.getResourceDescription(), beanName, "Error setting property values", ex);
+        }
+    }
+
+
+
+
+
+
+
+    //AbstractAutowireCapableBeanFactory:
+    private void invokeAwareMethods(final String beanName, final Object bean) {
+        if (bean instanceof Aware) {
+            if (bean instanceof BeanNameAware) {
+                ((BeanNameAware) bean).setBeanName(beanName);
+            }
+            if (bean instanceof BeanClassLoaderAware) {
+                ClassLoader bcl = getBeanClassLoader();
+                if (bcl != null) {
+                    ((BeanClassLoaderAware) bean).setBeanClassLoader(bcl);
+                }
+            }
+            if (bean instanceof BeanFactoryAware) {
+                ((BeanFactoryAware) bean).setBeanFactory(AbstractAutowireCapableBeanFactory.this);
+            }
+        }
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    public Object applyBeanPostProcessorsBeforeInitialization(Object existingBean, String beanName)
+            throws BeansException {
+
+        Object result = existingBean;
+        for (BeanPostProcessor processor : getBeanPostProcessors()) {
+            //调用postProcessBefore方法
+            Object current = processor.postProcessBeforeInitialization(result, beanName);
+            if (current == null) {
+                return result;
+            }
+            result = current;
+        }
+        return result;
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    //现在，bean的所有属性都设置好了，让它有机会做出反应，并有机会了解它所拥有的bean工厂(此对象)。
+    //这意味着检查bean是否实现了InitializingBean或定义了自定义init方法，如果实现了，则调用必要的回调
+    protected void invokeInitMethods(String beanName, final Object bean, @Nullable RootBeanDefinition mbd)
+            throws Throwable {
+
+        boolean isInitializingBean = (bean instanceof InitializingBean);
+        if (isInitializingBean && (mbd == null || !mbd.isExternallyManagedInitMethod("afterPropertiesSet"))) {
+            if (logger.isTraceEnabled()) {
+                logger.trace("Invoking afterPropertiesSet() on bean with name '" + beanName + "'");
+            }
+            if (System.getSecurityManager() != null) {
+                try {
+                    AccessController.doPrivileged((PrivilegedExceptionAction<Object>) () -> {
+                        ((InitializingBean) bean).afterPropertiesSet();
+                        return null;
+                    }, getAccessControlContext());
+                }catch (PrivilegedActionException pae) {
+                    throw pae.getException();
+                }
+            }else {
+                ((InitializingBean) bean).afterPropertiesSet();
+            }
+        }
+
+        if (mbd != null && bean.getClass() != NullBean.class) {
+            String initMethodName = mbd.getInitMethodName();
+            if (StringUtils.hasLength(initMethodName) &&
+                    !(isInitializingBean && "afterPropertiesSet".equals(initMethodName)) &&
+                    !mbd.isExternallyManagedInitMethod(initMethodName)) {
+                //调用自定义的init()方法
+                invokeCustomInitMethod(beanName, bean, mbd);
+            }
+        }
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    //在给定bean上调用指定的自定义init方法。叫invokeInitMethods
+    protected void invokeCustomInitMethod(String beanName, final Object bean, RootBeanDefinition mbd)
+            throws Throwable {
+
+        String initMethodName = mbd.getInitMethodName();
+        Assert.state(initMethodName != null, "No init method set");
+        Method initMethod = (mbd.isNonPublicAccessAllowed() ?
+                BeanUtils.findMethod(bean.getClass(), initMethodName) :
+                ClassUtils.getMethodIfAvailable(bean.getClass(), initMethodName));
+
+        if (initMethod == null) {
+            if (mbd.isEnforceInitMethod()) {
+                throw new BeanDefinitionValidationException("Could not find an init method named '" +
+                        initMethodName + "' on bean with name '" + beanName + "'");
+            }else {
+                if (logger.isTraceEnabled()) {
+                    logger.trace("No default init method named '" + initMethodName +
+                            "' found on bean with name '" + beanName + "'");
+                }
+                //忽略不存在的默认生命周期方法。
+                return;
+            }
+        }
+
+        if (logger.isTraceEnabled()) {
+            logger.trace("Invoking init method  '" + initMethodName + "' on bean with name '" + beanName + "'");
+        }
+        Method methodToInvoke = ClassUtils.getInterfaceMethodIfPossible(initMethod);
+
+        if (System.getSecurityManager() != null) {
+            AccessController.doPrivileged((PrivilegedAction<Object>) () -> {
+                ReflectionUtils.makeAccessible(methodToInvoke);
+                return null;
+            });
+            try {
+                //利用反射机制调用自定义方法
+                AccessController.doPrivileged((PrivilegedExceptionAction<Object>) () ->
+                        methodToInvoke.invoke(bean), getAccessControlContext());
+            }catch (PrivilegedActionException pae) {
+                InvocationTargetException ex = (InvocationTargetException) pae.getException();
+                throw ex.getTargetException();
+            }
+        } else {
+            try {
+                //利用反射机制调用自定义方法
+                ReflectionUtils.makeAccessible(methodToInvoke);
+                methodToInvoke.invoke(bean);
+            }catch (InvocationTargetException ex) {
+                throw ex.getTargetException();
+            }
+        }
+    }
+
+    //AbstractAutowireCapableBeanFactory:
+    public Object applyBeanPostProcessorsAfterInitialization(Object existingBean, String beanName)
+            throws BeansException {
+
+        Object result = existingBean;
+        for (BeanPostProcessor processor : getBeanPostProcessors()) {
+            Object current = processor.postProcessAfterInitialization(result, beanName);
+            if (current == null) {
+                return result;
+            }
+            result = current;
+        }
+        return result;
+    }
+
+
+
+
+    //AbstractBeanFactory:
+    //原型创建后的回调。默认实现将原型标记为不在创建中
+    protected void afterPrototypeCreation(String beanName) {
+        //ThreadLocal<Object> prototypesCurrentlyInCreation =
+        //			new NamedThreadLocal<>("Prototype beans currently in creation")
+        //当前正在创建的bean的名称
+        Object curVal = this.prototypesCurrentlyInCreation.get();
+        if (curVal instanceof String) {
+            this.prototypesCurrentlyInCreation.remove();
+        }else if (curVal instanceof Set) {
+            Set<String> beanNameSet = (Set<String>) curVal;
+            beanNameSet.remove(beanName);
+            if (beanNameSet.isEmpty()) {
+                this.prototypesCurrentlyInCreation.remove();
+            }
+        }
+    }
+
+
+
+
+
+
+
+
+
+    //AbstractAutowireCapableBeanFactory:
     //如果autowire设置为“byName”，则使用对工厂中其他bean的引用来填充任何缺失的属性值
     protected void autowireByName(
             String beanName, AbstractBeanDefinition mbd, BeanWrapper bw, MutablePropertyValues pvs) {
 
+        //获取bean属性数组，这些可能是对工厂中其他bean的不满意的引用
         String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
         for (String propertyName : propertyNames) {
             if (containsBean(propertyName)) {
