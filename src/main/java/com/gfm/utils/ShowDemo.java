@@ -1,9 +1,17 @@
 package com.gfm.utils;
 
 import com.sun.org.apache.xerces.internal.dom.DOMMessageFormatter;
+import org.aopalliance.aop.Advice;
+import org.aopalliance.intercept.MethodInterceptor;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.springframework.aop.*;
 import org.springframework.aop.framework.AopProxyUtils;
+import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.aop.framework.adapter.AdvisorAdapter;
+import org.springframework.aop.framework.adapter.UnknownAdviceTypeException;
+import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
+import org.springframework.aop.support.DefaultPointcutAdvisor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.CachedIntrospectionResults;
@@ -57,6 +65,7 @@ import java.io.InputStream;
 import java.lang.management.ManagementFactory;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.security.AccessController;
@@ -2435,5 +2444,233 @@ public class ShowDemo {
         }
         return false;
     }
+
+
+
+    //========================================
+
+
+
+    //AopUtils:
+    public static boolean canApply(Advisor advisor, Class<?> targetClass, boolean hasIntroductions) {
+        //判断通知是否是IntroductionAdvisor
+        if (advisor instanceof IntroductionAdvisor) {
+            return ((IntroductionAdvisor) advisor).getClassFilter().matches(targetClass);
+        }
+        //判断事务的通知BeanFactoryTransactionAttributeSourceAdvisor是否实现了PointcutAdvisor
+        else if (advisor instanceof PointcutAdvisor) {
+            //转为PointcutAdvisor类型
+            PointcutAdvisor pca = (PointcutAdvisor) advisor;
+            //找到真正能用的通知
+            return canApply(pca.getPointcut(), targetClass, hasIntroductions);
+        }else {
+            //它没有切入点，所以我们假设它适用
+            return true;
+        }
+    }
+
+    //AopUtils:
+    //判断目标类是否可以应用此切点，如果返回true就表示匹配，添加到合适的集合eligibleAdvisors中
+    public static boolean canApply(Pointcut pc, Class<?> targetClass, boolean hasIntroductions) {
+        Assert.notNull(pc, "Pointcut must not be null");
+        if (!pc.getClassFilter().matches(targetClass)) {
+            return false;
+        }
+        //通过切点获取到一个方法匹配器对象
+        MethodMatcher methodMatcher = pc.getMethodMatcher();
+        if (methodMatcher == MethodMatcher.TRUE) {
+            //如果匹配到任何方法，就不需要进行迭代
+            return true;
+        }
+        //判断匹配器是不是IntroductionAwareMethodMatcher
+        IntroductionAwareMethodMatcher introductionAwareMethodMatcher = null;
+        if (methodMatcher instanceof IntroductionAwareMethodMatcher) {
+            introductionAwareMethodMatcher = (IntroductionAwareMethodMatcher) methodMatcher;
+        }
+
+        //创建一个集合用于保存targetClass的class对象
+        Set<Class<?>> classes = new LinkedHashSet<>();
+        //判断当前class是不是代理的class对象
+        if (!Proxy.isProxyClass(targetClass)) {
+            //加入到集合中去
+            classes.add(ClassUtils.getUserClass(targetClass));
+        }
+        //获取到targetClass所实现的接口的class对象，然后加入到集合中
+        classes.addAll(ClassUtils.getAllInterfacesForClassAsSet(targetClass));
+
+        //循环所有的class对象
+        for (Class<?> clazz : classes) {
+            //通过class获取到所有的方法
+            Method[] methods = ReflectionUtils.getAllDeclaredMethods(clazz);
+            //循环我们的方法
+            for (Method method : methods) {
+                //通过methodMatcher.matches来匹配我们的方法
+                if (introductionAwareMethodMatcher != null ?
+                        introductionAwareMethodMatcher.matches(method, targetClass, hasIntroductions) :
+                        //通过方法匹配器进行匹配
+                        methodMatcher.matches(method, targetClass)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+
+
+    //AbstractAutoProxyCreator:
+    //给指定的aop创建一个AOP代理
+    protected Object createProxy(Class<?> beanClass, @Nullable String beanName,
+                                 @Nullable Object[] specificInterceptors, TargetSource targetSource) {
+
+        if (this.beanFactory instanceof ConfigurableListableBeanFactory) {
+            //1>为指定的bean公开给定的目标类
+            AutoProxyUtils.exposeTargetClass((ConfigurableListableBeanFactory) this.beanFactory, beanName, beanClass);
+        }
+
+        //创建一个代理对象工厂
+        ProxyFactory proxyFactory = new ProxyFactory();
+        proxyFactory.copyFrom(this);
+
+        //为proxyFactory设置创建jdk还是cglib代理
+        if (!proxyFactory.isProxyTargetClass()) {
+            //2>确定给定的bean是否应该使用其目标类而不是其接口进行代理
+            if (shouldProxyTargetClass(beanClass, beanName)) {
+                proxyFactory.setProxyTargetClass(true);
+            }else {
+                //3>检查给定bean类的接口，并将它们应用于{ProxyFactory}(如果合适的话)
+                evaluateProxyInterfaces(beanClass, proxyFactory);
+            }
+        }
+
+        //把我们的specificInterceptors数组中的Advisor转化为数组形式的
+        Advisor[] advisors = buildAdvisors(beanName, specificInterceptors);
+        //为我们的代理工厂加入通知器
+        proxyFactory.addAdvisors(advisors);
+        //设置targetSource对象
+        proxyFactory.setTargetSource(targetSource);
+        customizeProxyFactory(proxyFactory);
+
+        proxyFactory.setFrozen(this.freezeProxy);
+        if (advisorsPreFiltered()) {
+            proxyFactory.setPreFiltered(true);
+        }
+        //真正创建代理对象
+        return proxyFactory.getProxy(getProxyClassLoader());
+    }
+
+
+    //AbstractAutoProxyCreator:
+    //确定给定的bean是否应该使用其目标类而不是其接口进行代理
+    protected boolean shouldProxyTargetClass(Class<?> beanClass, @Nullable String beanName) {
+        return (this.beanFactory instanceof ConfigurableListableBeanFactory &&
+                AutoProxyUtils.shouldProxyTargetClass((ConfigurableListableBeanFactory) this.beanFactory, beanName));
+    }
+
+    //AutoProxyUtils:
+    public static boolean shouldProxyTargetClass(
+            ConfigurableListableBeanFactory beanFactory, @Nullable String beanName) {
+
+        if (beanName != null && beanFactory.containsBeanDefinition(beanName)) {
+            BeanDefinition bd = beanFactory.getBeanDefinition(beanName);
+            //PRESERVE_TARGET_CLASS_ATTRIBUTE ==> AutoProxyUtils.class.getName() + '.' + preserveTargetClass
+            return Boolean.TRUE.equals(bd.getAttribute(PRESERVE_TARGET_CLASS_ATTRIBUTE));
+        }
+        return false;
+    }
+
+
+    //ProxyProcessorSupport:
+    //检查给定bean类的接口，并将它们应用于{ProxyFactory}(如果合适的话)
+    protected void evaluateProxyInterfaces(Class<?> beanClass, ProxyFactory proxyFactory) {
+        Class<?>[] targetInterfaces = ClassUtils.getAllInterfacesForClass(beanClass, getProxyClassLoader());
+        boolean hasReasonableProxyInterface = false;
+        for (Class<?> ifc : targetInterfaces) {
+            if (!isConfigurationCallbackInterface(ifc) && !isInternalLanguageInterface(ifc) &&
+                    ifc.getMethods().length > 0) {
+                hasReasonableProxyInterface = true;
+                break;
+            }
+        }
+        if (hasReasonableProxyInterface) {
+            //必须允许相互引用;不能只将接口设置为目标的接口
+            for (Class<?> ifc : targetInterfaces) {
+                proxyFactory.addInterface(ifc);
+            }
+        }else {
+            proxyFactory.setProxyTargetClass(true);
+        }
+    }
+
+
+    //AbstractAutoProxyCreator:
+    //确定给定bean的advisor通知，包括特定的拦截器和通用的拦截器，所有这些都适应于Advisor接口
+    protected Advisor[] buildAdvisors(@Nullable String beanName, @Nullable Object[] specificInterceptors) {
+        //1>将指定的拦截器名称解析为Advisor对象
+        Advisor[] commonInterceptors = resolveInterceptorNames();
+
+        List<Object> allInterceptors = new ArrayList<>();
+        if (specificInterceptors != null) {
+            allInterceptors.addAll(Arrays.asList(specificInterceptors));
+            if (commonInterceptors.length > 0) {
+                if (this.applyCommonInterceptorsFirst) {
+                    allInterceptors.addAll(0, Arrays.asList(commonInterceptors));
+                }else {
+                    allInterceptors.addAll(Arrays.asList(commonInterceptors));
+                }
+            }
+        }
+        if (logger.isTraceEnabled()) {
+            int nrOfCommonInterceptors = commonInterceptors.length;
+            int nrOfSpecificInterceptors = (specificInterceptors != null ? specificInterceptors.length : 0);
+            logger.trace("Creating implicit proxy for bean '" + beanName + "' with " + nrOfCommonInterceptors +
+                    " common interceptors and " + nrOfSpecificInterceptors + " specific interceptors");
+        }
+
+        Advisor[] advisors = new Advisor[allInterceptors.size()];
+        for (int i = 0; i < allInterceptors.size(); i++) {
+            advisors[i] = this.advisorAdapterRegistry.wrap(allInterceptors.get(i));
+        }
+        return advisors;
+    }
+
+    //AbstractAutoProxyCreator:
+    private Advisor[] resolveInterceptorNames() {
+        BeanFactory bf = this.beanFactory;
+        ConfigurableBeanFactory cbf = (bf instanceof ConfigurableBeanFactory ? (ConfigurableBeanFactory) bf : null);
+        List<Advisor> advisors = new ArrayList<>();
+        for (String beanName : this.interceptorNames) {
+            if (cbf == null || !cbf.isCurrentlyInCreation(beanName)) {
+                Assert.state(bf != null, "BeanFactory required for resolving interceptor names");
+                Object next = bf.getBean(beanName);
+                advisors.add(this.advisorAdapterRegistry.wrap(next));
+            }
+        }
+        return advisors.toArray(new Advisor[0]);
+    }
+
+    //DefaultAdvisorAdapterRegistry:
+    public Advisor wrap(Object adviceObject) throws UnknownAdviceTypeException {
+        if (adviceObject instanceof Advisor) {
+            return (Advisor) adviceObject;
+        }
+        if (!(adviceObject instanceof Advice)) {
+            throw new UnknownAdviceTypeException(adviceObject);
+        }
+        Advice advice = (Advice) adviceObject;
+        if (advice instanceof MethodInterceptor) {
+            // So well-known it doesn't even need an adapter.
+            return new DefaultPointcutAdvisor(advice);
+        }
+        for (AdvisorAdapter adapter : this.adapters) {
+            // Check that it is supported.
+            if (adapter.supportsAdvice(advice)) {
+                return new DefaultPointcutAdvisor(advice);
+            }
+        }
+        throw new UnknownAdviceTypeException(advice);
+    }
+
 
 }
