@@ -1,16 +1,20 @@
 //package com.gfm.utils;
 //
 //import com.sun.org.apache.xerces.internal.dom.DOMMessageFormatter;
+//import jdk.internal.reflect.Reflection;
 //import org.aopalliance.aop.Advice;
 //import org.aopalliance.intercept.MethodInterceptor;
+//import org.aopalliance.intercept.MethodInvocation;
 //import org.apache.commons.logging.Log;
 //import org.apache.commons.logging.LogFactory;
+//import org.aspectj.lang.ProceedingJoinPoint;
+//import org.aspectj.lang.annotation.Around;
 //import org.springframework.aop.*;
-//import org.springframework.aop.framework.AopProxyUtils;
-//import org.springframework.aop.framework.ProxyFactory;
+//import org.springframework.aop.framework.*;
 //import org.springframework.aop.framework.adapter.AdvisorAdapter;
 //import org.springframework.aop.framework.adapter.UnknownAdviceTypeException;
 //import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
+//import org.springframework.aop.support.AopUtils;
 //import org.springframework.aop.support.DefaultPointcutAdvisor;
 //import org.springframework.beans.BeanUtils;
 //import org.springframework.beans.BeansException;
@@ -22,6 +26,10 @@
 //import org.springframework.beans.factory.support.*;
 //import org.springframework.beans.factory.xml.*;
 //import org.springframework.beans.support.ResourceEditorRegistrar;
+//import org.springframework.cglib.core.*;
+//import org.springframework.cglib.proxy.Callback;
+//import org.springframework.cglib.proxy.CallbackFilter;
+//import org.springframework.cglib.proxy.Enhancer;
 //import org.springframework.context.*;
 //import org.springframework.context.event.ApplicationEventMulticaster;
 //import org.springframework.context.event.ContextRefreshedEvent;
@@ -45,6 +53,7 @@
 //import org.springframework.core.log.LogMessage;
 //import org.springframework.lang.Nullable;
 //import org.springframework.util.*;
+//import org.springframework.util.CollectionUtils;
 //import org.springframework.util.xml.DomUtils;
 //import org.springframework.util.xml.XmlValidationModeDetector;
 //import org.w3c.dom.Document;
@@ -64,8 +73,7 @@
 //import java.io.InputStream;
 //import java.lang.management.ManagementFactory;
 //import java.lang.ref.WeakReference;
-//import java.lang.reflect.Method;
-//import java.lang.reflect.Proxy;
+//import java.lang.reflect.*;
 //import java.net.MalformedURLException;
 //import java.net.URL;
 //import java.security.AccessController;
@@ -2561,6 +2569,352 @@
 //    }
 //
 //
+//    //ProxyFactory:
+//    public Object getProxy(@Nullable ClassLoader classLoader) {
+//        //1>createAopProxy() 决定使用jdk还是cglib进行动态代理
+//        //2>getProxy(classLoader) 具体获取代理对象实例
+//        return createAopProxy().getProxy(classLoader);
+//    }
+//
+//    //ProxyCreatorSupport:
+//    //子类应该调用这个新的AOP代理,
+//    protected final synchronized AopProxy createAopProxy() {
+//        //如果没有激活，激活这个代理配置
+//        if (!this.active) {
+//            activate();
+//        }
+//        return getAopProxyFactory().createAopProxy(this);
+//    }
+//
+//
+//    //ProxyCreatorSupport:
+//    private void activate() {
+//        this.active = true;
+//        for (AdvisedSupportListener listener : this.listeners) {
+//            listener.activated(this);
+//        }
+//    }
+//
+//    //DefaultAopProxyFactory:
+//    public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException {
+//        //判断我们是否指定使用cglib代理ProxyTargetClass =true  默认false
+//        if (config.isOptimize() || config.isProxyTargetClass() || hasNoUserSuppliedProxyInterfaces(config)) {
+//            Class<?> targetClass = config.getTargetClass();
+//            if (targetClass == null) {
+//                throw new AopConfigException("TargetSource cannot determine target class: " +
+//                        "Either an interface or a target is required for proxy creation.");
+//            }
+//            //targetClass是接口使用的就是jdk代理
+//            if (targetClass.isInterface() || Proxy.isProxyClass(targetClass)) {
+//                return new JdkDynamicAopProxy(config);
+//            }
+//            //cglib代理
+//            return new ObjenesisCglibAopProxy(config);
+//        }else {
+//            return new JdkDynamicAopProxy(config);
+//        }
+//    }
+//
+//
+//    //JdkDynamicAopProxy:
+//    //使用jdk动态aop代理
+//    public Object getProxy(@Nullable ClassLoader classLoader) {
+//        if (logger.isTraceEnabled()) {
+//            logger.trace("Creating JDK dynamic proxy: " + this.advised.getTargetSource());
+//        }
+//        //确定接口,为给定的AOP配置代理
+//        Class<?>[] proxiedInterfaces = AopProxyUtils.completeProxiedInterfaces(this.advised, true);
+//        //获取定义了equals和hashCode的方法
+//        findDefinedEqualsAndHashCodeMethods(proxiedInterfaces);
+//        //创建代理实例
+//        return Proxy.newProxyInstance(classLoader, proxiedInterfaces, this);
+//    }
+//
+//
+//    //AopProxyUtils:
+//    static Class<?>[] completeProxiedInterfaces(AdvisedSupport advised, boolean decoratingProxy) {
+//        Class<?>[] specifiedInterfaces = advised.getProxiedInterfaces();
+//        if (specifiedInterfaces.length == 0) {
+//            //没有指定的接口:检查是目标类是否是一个接口
+//            Class<?> targetClass = advised.getTargetClass();
+//            if (targetClass != null) {
+//                if (targetClass.isInterface()) {
+//                    advised.setInterfaces(targetClass);
+//                }else if (Proxy.isProxyClass(targetClass)) {
+//                    advised.setInterfaces(targetClass.getInterfaces());
+//                }
+//                specifiedInterfaces = advised.getProxiedInterfaces();
+//            }
+//        }
+//        boolean addSpringProxy = !advised.isInterfaceProxied(SpringProxy.class);
+//        boolean addAdvised = !advised.isOpaque() && !advised.isInterfaceProxied(Advised.class);
+//        boolean addDecoratingProxy = (decoratingProxy && !advised.isInterfaceProxied(DecoratingProxy.class));
+//        int nonUserIfcCount = 0;
+//        if (addSpringProxy) {
+//            nonUserIfcCount++;
+//        }
+//        if (addAdvised) {
+//            nonUserIfcCount++;
+//        }
+//        if (addDecoratingProxy) {
+//            nonUserIfcCount++;
+//        }
+//        Class<?>[] proxiedInterfaces = new Class<?>[specifiedInterfaces.length + nonUserIfcCount];
+//        System.arraycopy(specifiedInterfaces, 0, proxiedInterfaces, 0, specifiedInterfaces.length);
+//        int index = specifiedInterfaces.length;
+//        if (addSpringProxy) {
+//            proxiedInterfaces[index] = SpringProxy.class;
+//            index++;
+//        }
+//        if (addAdvised) {
+//            proxiedInterfaces[index] = Advised.class;
+//            index++;
+//        }
+//        if (addDecoratingProxy) {
+//            proxiedInterfaces[index] = DecoratingProxy.class;
+//        }
+//        return proxiedInterfaces;
+//    }
+//
+//
+//    //JdkDynamicAopProxy:
+//    private void findDefinedEqualsAndHashCodeMethods(Class<?>[] proxiedInterfaces) {
+//        for (Class<?> proxiedInterface : proxiedInterfaces) {
+//            Method[] methods = proxiedInterface.getDeclaredMethods();
+//            for (Method method : methods) {
+//                if (AopUtils.isEqualsMethod(method)) {
+//                    this.equalsDefined = true;
+//                }
+//                if (AopUtils.isHashCodeMethod(method)) {
+//                    this.hashCodeDefined = true;
+//                }
+//                if (this.equalsDefined && this.hashCodeDefined) {
+//                    return;
+//                }
+//            }
+//        }
+//    }
+//
+//
+//    //java.lang.reflect.Proxy:
+//    public static Object newProxyInstance(ClassLoader loader,
+//                                          Class<?>[] interfaces,
+//                                          InvocationHandler h) {
+//        Objects.requireNonNull(h);
+//        final Class<?> caller = System.getSecurityManager() == null
+//                ? null
+//                : Reflection.getCallerClass();
+//
+//        //查找或生成指定的代理类的构造函数
+//        Constructor<?> cons = getProxyConstructor(caller, loader, interfaces);
+//
+//        return newProxyInstance(caller, cons, h);
+//    }
+//
+//    //java.lang.reflect.Proxy:
+//    private static Constructor<?> getProxyConstructor(Class<?> caller,
+//                                                      ClassLoader loader,
+//                                                      Class<?>... interfaces){
+//        //优化单一接口
+//        if (interfaces.length == 1) {
+//            Class<?> intf = interfaces[0];
+//            if (caller != null) {
+//                checkProxyAccess(caller, loader, intf);
+//            }
+//            //ClassLoaderValue<Constructor<?>> proxyCache = new ClassLoaderValue<>()
+//            return proxyCache.sub(intf).computeIfAbsent(
+//                    loader,
+//                    (ld, clv) -> new ProxyBuilder(ld, clv.key()).build()
+//            );
+//        } else {
+//            // interfaces cloned
+//            final Class<?>[] intfsArray = interfaces.clone();
+//            if (caller != null) {
+//                checkProxyAccess(caller, loader, intfsArray);
+//            }
+//            final List<Class<?>> intfs = Arrays.asList(intfsArray);
+//            return proxyCache.sub(intfs).computeIfAbsent(
+//                    loader,
+//                    (ld, clv) -> new ProxyBuilder(ld, clv.key()).build()
+//            );
+//        }
+//    }
+//
+//
+//    //java.lang.reflect.Proxy:
+//    private static Object newProxyInstance(Class<?> caller,
+//                                           Constructor<?> cons,
+//                                           InvocationHandler h) {
+//        //调用指定了invocation handler的构造函数
+//        try {
+//            if (caller != null) {
+//                checkNewProxyPermission(caller, cons.getDeclaringClass());
+//            }
+//            //使用构造函数实例化一个类
+//            return cons.newInstance(new Object[]{h});
+//        } catch (IllegalAccessException | InstantiationException e) {
+//            throw new InternalError(e.toString(), e);
+//        } catch (InvocationTargetException e) {
+//            Throwable t = e.getCause();
+//            if (t instanceof RuntimeException) {
+//                throw (RuntimeException) t;
+//            } else {
+//                throw new InternalError(t.toString(), t);
+//            }
+//        }
+//    }
+//
+//
+//
+//
+//
+//
+//
+//    //CglibAopProxy:
+//    //使用cglib动态aop代理
+//    public Object getProxy(@Nullable ClassLoader classLoader) {
+//        if (logger.isTraceEnabled()) {
+//            logger.trace("Creating CGLIB proxy: " + this.advised.getTargetSource());
+//        }
+//
+//        try {
+//            Class<?> rootClass = this.advised.getTargetClass();
+//            Assert.state(rootClass != null, "Target class must be available for creating a CGLIB proxy");
+//
+//            Class<?> proxySuperClass = rootClass;
+//            //String CGLIB_CLASS_SEPARATOR = "$$"
+//            if (rootClass.getName().contains(ClassUtils.CGLIB_CLASS_SEPARATOR)) {
+//                proxySuperClass = rootClass.getSuperclass();
+//                Class<?>[] additionalInterfaces = rootClass.getInterfaces();
+//                for (Class<?> additionalInterface : additionalInterfaces) {
+//                    this.advised.addInterface(additionalInterface);
+//                }
+//            }
+//
+//            //验证类,编写必要的日志消息
+//            validateClassIfNecessary(proxySuperClass, classLoader);
+//
+//            // Configure CGLIB Enhancer...
+//            Enhancer enhancer = createEnhancer();
+//            if (classLoader != null) {
+//                enhancer.setClassLoader(classLoader);
+//                if (classLoader instanceof SmartClassLoader &&
+//                        ((SmartClassLoader) classLoader).isClassReloadable(proxySuperClass)) {
+//                    enhancer.setUseCache(false);
+//                }
+//            }
+//            enhancer.setSuperclass(proxySuperClass);
+//            enhancer.setInterfaces(AopProxyUtils.completeProxiedInterfaces(this.advised));
+//            enhancer.setNamingPolicy(SpringNamingPolicy.INSTANCE);
+//            enhancer.setStrategy(new ClassLoaderAwareGeneratorStrategy(classLoader));
+//
+//            Callback[] callbacks = getCallbacks(rootClass);
+//            Class<?>[] types = new Class<?>[callbacks.length];
+//            for (int x = 0; x < types.length; x++) {
+//                types[x] = callbacks[x].getClass();
+//            }
+//            // fixedInterceptorMap only populated at this point, after getCallbacks call above
+//            enhancer.setCallbackFilter(new CglibAopProxy.ProxyCallbackFilter(
+//                    this.advised.getConfigurationOnlyCopy(), this.fixedInterceptorMap, this.fixedInterceptorOffset));
+//            enhancer.setCallbackTypes(types);
+//
+//            //生成代理类同时创建一个代理实例
+//            return createProxyClassAndInstance(enhancer, callbacks);
+//        }catch (CodeGenerationException | IllegalArgumentException ex) {
+//            throw new AopConfigException("Could not generate CGLIB subclass of " + this.advised.getTargetClass() +
+//                    ": Common causes of this problem include using a final class or a non-visible class",ex);
+//        }catch (Throwable ex) {
+//            // TargetSource.getTarget() failed
+//            throw new AopConfigException("Unexpected AOP exception", ex);
+//        }
+//    }
+//
+//
+//
+//
+//    //CglibAopProxy:
+//    protected Object createProxyClassAndInstance(Enhancer enhancer, Callback[] callbacks) {
+//        enhancer.setInterceptDuringConstruction(false);
+//        enhancer.setCallbacks(callbacks);
+//        return (this.constructorArgs != null && this.constructorArgTypes != null ?
+//                enhancer.create(this.constructorArgTypes, this.constructorArgs) :
+//                enhancer.create());
+//    }
+//
+//
+//    //Enhancer
+//    //必要时生成一个新类,并使用指定的回调函数(如果有的话)创建一个新的对象实例。
+//    public Object create(Class[] argumentTypes, Object[] arguments) {
+//        classOnly = false;
+//        if (argumentTypes == null || arguments == null || argumentTypes.length != arguments.length) {
+//            throw new IllegalArgumentException("Arguments must be non-null and of equal length");
+//        }
+//        this.argumentTypes = argumentTypes;
+//        this.arguments = arguments;
+//        return createHelper();
+//    }
+//
+//    //Enhancer:
+//    private Object createHelper() {
+//        preValidate();
+//        Object key = KEY_FACTORY.newInstance((superclass != null) ? superclass.getName() : null,
+//                ReflectUtils.getNames(interfaces),
+//                filter == ALL_ZERO ? null : new WeakCacheKey<CallbackFilter>(filter),
+//                callbackTypes,
+//                useFactory,
+//                interceptDuringConstruction,
+//                serialVersionUID);
+//        this.currentKey = key;
+//        //创建代理实例对象
+//        Object result = super.create(key);
+//        return result;
+//    }
+//
+//
+//    //AbstractClassGenerator:
+//    protected Object create(Object key) {
+//        try {
+//            ClassLoader loader = getClassLoader();
+//            Map<ClassLoader, ClassLoaderData> cache = CACHE;
+//            ClassLoaderData data = cache.get(loader);
+//            if (data == null) {
+//                synchronized (AbstractClassGenerator.class) {
+//                    cache = CACHE;
+//                    data = cache.get(loader);
+//                    if (data == null) {
+//                        Map<ClassLoader, ClassLoaderData> newCache = new WeakHashMap<ClassLoader, ClassLoaderData>(cache);
+//                        data = new AbstractClassGenerator.ClassLoaderData(loader);
+//                        newCache.put(loader, data);
+//                        CACHE = newCache;
+//                    }
+//                }
+//            }
+//            this.key = key;
+//            Object obj = data.get(this, getUseCache());
+//            if (obj instanceof Class) {
+//                return firstInstance((Class) obj);
+//            }
+//            return nextInstance(obj);
+//        }catch (RuntimeException | Error ex) {
+//            throw ex;
+//        }catch (Exception ex) {
+//            throw new CodeGenerationException(ex);
+//        }
+//    }
+//
+//
+//
+//
+//    //AutoProxyUtils:
+//    static void exposeTargetClass(
+//            ConfigurableListableBeanFactory beanFactory, @Nullable String beanName, Class<?> targetClass) {
+//
+//        if (beanName != null && beanFactory.containsBeanDefinition(beanName)) {
+//            //ORIGINAL_TARGET_CLASS_ATTRIBUTE ==> AutoProxyUtils.class.getName() + ".originalTargetClass"
+//            beanFactory.getMergedBeanDefinition(beanName).setAttribute(ORIGINAL_TARGET_CLASS_ATTRIBUTE, targetClass);
+//        }
+//    }
+//
 //    //AbstractAutoProxyCreator:
 //    //确定给定的bean是否应该使用其目标类而不是其接口进行代理
 //    protected boolean shouldProxyTargetClass(Class<?> beanClass, @Nullable String beanName) {
@@ -2670,6 +3024,123 @@
 //            }
 //        }
 //        throw new UnknownAdviceTypeException(advice);
+//    }
+//
+//
+//
+//    @org.aspectj.lang.annotation.Pointcut("execution(public * com.gfm.controller.*.*(..))")
+//    public void pointCut(){
+//    }
+//
+//    /**
+//     * 环绕通知,环绕增强，相当于MethodInterceptor
+//     * @param pjp
+//     * @return
+//     */
+//    @Around("pointCut()")
+//    public Object around(ProceedingJoinPoint pjp) {
+//        System.out.println("-------around start");
+//        try{
+//            Object result = pjp.proceed();
+//            System.out.println("-------around end");
+//            return result;
+//        }catch (Throwable e){
+//            e.printStackTrace();
+//            return null;
+//        }
+//    }
+//
+//
+//
+//    //JdkDynamicAopProxy:
+//    //jdk动态代理的invoke方法
+//    //必须实现{InvocationHandler.invoke} 方法
+//    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+//        Object oldProxy = null;
+//        boolean setProxyContext = false;
+//
+//        //获取到我们的目标对象
+//        TargetSource targetSource = this.advised.targetSource;
+//        Object target = null;
+//
+//        try {
+//            //若是equals方法不需要代理
+//            if (!this.equalsDefined && AopUtils.isEqualsMethod(method)) {
+//                // The target does not implement the equals(Object) method itself.
+//                return equals(args[0]);
+//            }
+//            //若是hashCode方法不需要代理
+//            else if (!this.hashCodeDefined && AopUtils.isHashCodeMethod(method)) {
+//                // The target does not implement the hashCode() method itself.
+//                return hashCode();
+//            }
+//            //若是DecoratingProxy也不要拦截器执行
+//            else if (method.getDeclaringClass() == DecoratingProxy.class) {
+//                // There is only getDecoratedClass() declared -> dispatch to proxy config.
+//                return AopProxyUtils.ultimateTargetClass(this.advised);
+//            }
+//            else if (!this.advised.opaque && method.getDeclaringClass().isInterface() &&
+//                    method.getDeclaringClass().isAssignableFrom(Advised.class)) {
+//                // Service invocations on ProxyConfig with the proxy config...
+//                return AopUtils.invokeJoinpointUsingReflection(this.advised, method, args);
+//            }
+//
+//            Object retVal;
+//
+//            /**
+//             * 这个配置是暴露我们的代理对象到线程变量中，需要搭配@EnableAspectJAutoProxy(exposeProxy = true)一起使用
+//             * 比如在目标对象方法中再次获取代理对象可以使用这个AopContext.currentProxy()
+//             * 还有的就是事务方法调用事务方法的时候也是用到这个
+//             */
+//            if (this.advised.exposeProxy) {
+//                //把我们的代理对象暴露到线程变量中
+//                oldProxy = AopContext.setCurrentProxy(proxy);
+//                setProxyContext = true;
+//            }
+//
+//            //获取我们的目标对象
+//            target = targetSource.getTarget();
+//            //获取我们目标对象的class
+//            Class<?> targetClass = (target != null ? target.getClass() : null);
+//
+//            //把aop的advisor转化为拦截器链
+//            List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
+//
+//            ////如果拦截器链为空
+//            if (chain.isEmpty()) {
+//                //通过反射直接调用执行
+//                Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
+//                retVal = AopUtils.invokeJoinpointUsingReflection(target, method, argsToUse);
+//            } else {
+//                //创建一个方法调用对象
+//                MethodInvocation invocation =
+//                        new ReflectiveMethodInvocation(proxy, target, method, args, targetClass, chain);
+//                //调用执行
+//                retVal = invocation.proceed();
+//            }
+//
+//            // Massage return value if necessary.
+//            Class<?> returnType = method.getReturnType();
+//            if (retVal != null && retVal == target &&
+//                    returnType != Object.class && returnType.isInstance(proxy) &&
+//                    !RawTargetAccess.class.isAssignableFrom(method.getDeclaringClass())) {
+//                //特殊情况:它返回的“this”,方法的返回类型是兼容的。请注意,目标集本身不能是另一个返回的对象的引用。
+//                retVal = proxy;
+//            }else if (retVal == null && returnType != Void.TYPE && returnType.isPrimitive()) {
+//                throw new AopInvocationException(
+//                        "Null return value from advice does not match primitive return type for: " + method);
+//            }
+//            return retVal;
+//        }finally {
+//            if (target != null && !targetSource.isStatic()) {
+//                // Must have come from TargetSource.
+//                targetSource.releaseTarget(target);
+//            }
+//            if (setProxyContext) {
+//                // Restore old proxy.
+//                AopContext.setCurrentProxy(oldProxy);
+//            }
+//        }
 //    }
 //
 //
