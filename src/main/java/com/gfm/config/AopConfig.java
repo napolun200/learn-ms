@@ -11,17 +11,6 @@ public class AopConfig {
 
     @Pointcut("execution(public * com.gfm.controller.*.*(..))")
     public void pointCut(){
-
-    }
-
-    @Before("pointCut()")
-    public void before(JoinPoint joinPoint) {
-        System.out.println("------------before");
-    }
-
-    @After("pointCut()")
-    public void after(JoinPoint joinPoint){
-        System.out.println("-----------after");
     }
 
     /**
@@ -41,6 +30,18 @@ public class AopConfig {
             return null;
         }
     }
+
+
+    @Before("pointCut()")
+    public void before(JoinPoint joinPoint) {
+        System.out.println("------------before");
+    }
+
+    @After("pointCut()")
+    public void after(JoinPoint joinPoint){
+        System.out.println("-----------after");
+    }
+
 
     /**
      * 后置异常通知
