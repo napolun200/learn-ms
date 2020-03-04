@@ -2098,4 +2098,36 @@ public class AopDemo {
     }
 
 
+    //TransactionAspectSupport:
+    protected TransactionInfo createTransactionIfNecessary(@Nullable PlatformTransactionManager tm,
+                                                                                    @Nullable TransactionAttribute txAttr, final String joinpointIdentification) {
+        //把我们的方法描述符作为一个事务名称
+        if (txAttr != null && txAttr.getName() == null) {
+            txAttr = new DelegatingTransactionAttribute(txAttr) {
+                @Override
+                public String getName() {
+                    return joinpointIdentification;
+                }
+            };
+        }
+
+        TransactionStatus status = null;
+        if (txAttr != null) {
+            if (tm != null) {
+                //获取一个事务状态
+                status = tm.getTransaction(txAttr);
+            }else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Skipping transactional joinpoint [" + joinpointIdentification +
+                            "] because no transaction manager has been configured");
+                }
+            }
+        }
+        //把事务状态和事务属性等信息封装成一个TransactionInfo对象
+        return prepareTransactionInfo(tm, txAttr, joinpointIdentification, status);
+    }
+
+
+
+
 }
