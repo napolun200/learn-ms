@@ -1,6 +1,9 @@
 package com.gfm.utils;
 
+import org.aopalliance.intercept.MethodInterceptor;
+import org.aopalliance.intercept.MethodInvocation;
 import org.springframework.aop.*;
+import org.springframework.aop.framework.*;
 import org.springframework.aop.framework.autoproxy.AbstractAdvisorAutoProxyCreator;
 import org.springframework.aop.framework.autoproxy.ProxyCreationContext;
 import org.springframework.aop.support.AopUtils;
@@ -9,6 +12,9 @@ import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.BeanCurrentlyInCreationException;
 import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.core.DecoratingProxy;
+import org.springframework.core.KotlinDetector;
+import org.springframework.core.ReactiveAdapter;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.annotation.AnnotationAttributes;
 import org.springframework.lang.Nullable;
@@ -18,6 +24,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.TransactionAnnotationParser;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.*;
+import org.springframework.transaction.support.CallbackPreferringPlatformTransactionManager;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.ReflectionUtils;
@@ -1850,7 +1857,245 @@ public class AopDemo {
     /**
      * =================================================================
      * Spring事务代理调用过程
+     * 调用执行方法，实际上是调用 org.springframework.aop.framework.JdkDynamicAopProxy#invoke
      */
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        Object oldProxy = null;
+        boolean setProxyContext = false;
+
+        //获取到我们的目标对象
+        TargetSource targetSource = this.advised.targetSource;
+        Object target = null;
+
+        try {
+            //若是equals方法不需要代理
+            if (!this.equalsDefined && AopUtils.isEqualsMethod(method)) {
+                // The target does not implement the equals(Object) method itself.
+                return equals(args[0]);
+            }
+            //若是hashCode方法不需要代理
+            else if (!this.hashCodeDefined && AopUtils.isHashCodeMethod(method)) {
+                // The target does not implement the hashCode() method itself.
+                return hashCode();
+            }
+            //若是DecoratingProxy也不要拦截器执行
+            else if (method.getDeclaringClass() == DecoratingProxy.class) {
+                // There is only getDecoratedClass() declared -> dispatch to proxy config.
+                return AopProxyUtils.ultimateTargetClass(this.advised);
+            }else if (!this.advised.opaque && method.getDeclaringClass().isInterface() &&
+                    method.getDeclaringClass().isAssignableFrom(Advised.class)) {
+                // Service invocations on ProxyConfig with the proxy config...
+                return AopUtils.invokeJoinpointUsingReflection(this.advised, method, args);
+            }
+
+            Object retVal;
+            /**
+             * 这个配置是暴露我们的代理对象到线程变量中，需要搭配@EnableAspectJAutoProxy(exposeProxy = true)一起使用
+             * 比如在目标对象方法中再次获取代理对象可以使用这个AopContext.currentProxy()
+             * 还有的就是事务方法调用事务方法的时候也是用到这个
+             */
+            if (this.advised.exposeProxy) {
+                //把我们的代理对象暴露到线程变量中
+                oldProxy = AopContext.setCurrentProxy(proxy);
+                setProxyContext = true;
+            }
+
+            //获取我们的目标对象
+            target = targetSource.getTarget();
+            //获取我们目标对象的class
+            Class<?> targetClass = (target != null ? target.getClass() : null);
+
+            //把aop的advisor转化为拦截器链
+            List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
+
+            //如果拦截器链为空
+            if (chain.isEmpty()) {
+                //通过反射直接调用执行
+                Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
+                retVal = AopUtils.invokeJoinpointUsingReflection(target, method, argsToUse);
+            }else {
+                //创建一个方法调用对象
+                MethodInvocation invocation =
+                        new ReflectiveMethodInvocation(proxy, target, method, args, targetClass, chain);
+                //1>调用执行
+                retVal = invocation.proceed();
+            }
+
+            // Massage return value if necessary.
+            Class<?> returnType = method.getReturnType();
+            if (retVal != null && retVal == target &&
+                    returnType != Object.class && returnType.isInstance(proxy) &&
+                    !RawTargetAccess.class.isAssignableFrom(method.getDeclaringClass())) {
+                retVal = proxy;
+            }else if (retVal == null && returnType != Void.TYPE && returnType.isPrimitive()) {
+                throw new AopInvocationException(
+                        "Null return value from advice does not match primitive return type for: " + method);
+            }
+            return retVal;
+        }finally {
+            if (target != null && !targetSource.isStatic()) {
+                // Must have come from TargetSource.
+                targetSource.releaseTarget(target);
+            }
+            if (setProxyContext) {
+                // Restore old proxy.
+                AopContext.setCurrentProxy(oldProxy);
+            }
+        }
+    }
+
+    //ReflectiveMethodInvocation:
+    public Object proceed() throws Throwable {
+        //从-1开始,下标=拦截器的长度-1的条件满足表示执行到了最后一个拦截器的时候，此时执行目标方法
+        if (this.currentInterceptorIndex == this.interceptorsAndDynamicMethodMatchers.size() - 1) {
+            return invokeJoinpoint();
+        }
+
+        //获取第一个方法拦截器使用的是前++
+        Object interceptorOrInterceptionAdvice =
+                this.interceptorsAndDynamicMethodMatchers.get(++this.currentInterceptorIndex);
+        if (interceptorOrInterceptionAdvice instanceof InterceptorAndDynamicMethodMatcher) {
+            InterceptorAndDynamicMethodMatcher dm =
+                    (InterceptorAndDynamicMethodMatcher) interceptorOrInterceptionAdvice;
+            Class<?> targetClass = (this.targetClass != null ? this.targetClass : this.method.getDeclaringClass());
+            if (dm.methodMatcher.matches(this.method, targetClass, this.arguments)) {
+                return dm.interceptor.invoke(this);
+            }else {
+                //动态匹配失败。跳过这个拦截器并调用链中的下一个
+                return proceed();
+            }
+        }else {
+            //真正的开始调用，它是一个拦截器，所以我们只是调用它:在构造这个对象之前，切入点将被静态地评估。
+            return ((MethodInterceptor) interceptorOrInterceptionAdvice).invoke(this);
+        }
+    }
+
+    //TransactionInterceptor:
+    public Object invoke(MethodInvocation invocation) throws Throwable {
+        //获取我们的代理对象的class属性
+        Class<?> targetClass = (invocation.getThis() != null ? AopUtils.getTargetClass(invocation.getThis()) : null);
+
+        //1>以事务的方式调用目标方法, 在这埋了一个钩子函数, 用来回调目标方法的
+        return invokeWithinTransaction(invocation.getMethod(), targetClass, invocation::proceed);
+    }
+
+
+    //TransactionAspectSupport:
+    //用于around-advice-based子类的委托，委托给该类上的其他几个模板方法
+    protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass,
+                                             final TransactionAspectSupport.InvocationCallback invocation) throws Throwable {
+
+        //获取我们的事务属源对象
+        TransactionAttributeSource tas = getTransactionAttributeSource();
+        //通过事务属性源对象获取到我们的事务属性信息
+        final TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+        final TransactionManager tm = determineTransactionManager(txAttr);
+
+        //如果使用的是响应式的事务管理
+        if (this.reactiveAdapterRegistry != null && tm instanceof ReactiveTransactionManager) {
+            ReactiveTransactionSupport txSupport = this.transactionSupportCache.computeIfAbsent(method, key -> {
+                if (KotlinDetector.isKotlinType(method.getDeclaringClass()) && KotlinDelegate.isSuspend(method)) {
+                    throw new TransactionUsageException(
+                            "Unsupported annotated transaction on suspending function detected: " + method +
+                                    ". Use TransactionalOperator.transactional extensions instead.");
+                }
+                ReactiveAdapter adapter = this.reactiveAdapterRegistry.getAdapter(method.getReturnType());
+                if (adapter == null) {
+                    throw new IllegalStateException("Cannot apply reactive transaction to non-reactive return type: " +
+                            method.getReturnType());
+                }
+                return new ReactiveTransactionSupport(adapter);
+            });
+            return txSupport.invokeWithinTransaction(
+                    method, targetClass, invocation, txAttr, (ReactiveTransactionManager) tm);
+        }
+
+        //获取我们配置的事务管理器对象
+        PlatformTransactionManager ptm = asPlatformTransactionManager(tm);
+        //从tx属性对象中获取出标注了@Transactionl的方法描述符
+        final String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
+
+        //处理声明式事务
+        if (txAttr == null || !(ptm instanceof CallbackPreferringPlatformTransactionManager)) {
+            //有没有必要创建事务
+            TransactionInfo txInfo = createTransactionIfNecessary(ptm, txAttr, joinpointIdentification);
+
+            Object retVal;
+            try {
+                //调用钩子函数进行回调目标方法
+                retVal = invocation.proceedWithInvocation();
+            }catch (Throwable ex) {
+                //抛出异常进行回滚处理
+                completeTransactionAfterThrowing(txInfo, ex);
+                throw ex;
+            }finally {
+                //清空我们的线程变量中transactionInfo的值
+                cleanupTransactionInfo(txInfo);
+            }
+
+            if (vavrPresent && VavrDelegate.isVavrTry(retVal)) {
+                // Set rollback-only in case of Vavr failure matching our rollback rules...
+                org.springframework.transaction.TransactionStatus status = txInfo.getTransactionStatus();
+                if (status != null && txAttr != null) {
+                    retVal = VavrDelegate.evaluateTryFailure(retVal, txAttr, status);
+                }
+            }
+            //提交事务
+            commitTransactionAfterReturning(txInfo);
+            return retVal;
+        } else { //编程式事务
+            final ThrowableHolder throwableHolder = new ThrowableHolder();
+
+            //这是一个CallbackPreferringPlatformTransactionManager:通过TransactionCallback回调进入
+            try {
+                Object result = ((CallbackPreferringPlatformTransactionManager) ptm).execute(txAttr, status -> {
+                    TransactionAspectSupport.TransactionInfo txInfo = prepareTransactionInfo(ptm, txAttr, joinpointIdentification, status);
+                    try {
+                        Object retVal = invocation.proceedWithInvocation();
+                        if (vavrPresent && VavrDelegate.isVavrTry(retVal)) {
+                            //仅在Vavr匹配回滚规则失败的情况下设置回滚
+                            retVal = VavrDelegate.evaluateTryFailure(retVal, txAttr, status);
+                        }
+                        return retVal;
+                    } catch (Throwable ex) {
+                        if (txAttr.rollbackOn(ex)) {
+                            // A RuntimeException: will lead to a rollback.
+                            if (ex instanceof RuntimeException) {
+                                throw (RuntimeException) ex;
+                            }else {
+                                throw new ThrowableHolderException(ex);
+                            }
+                        }else {
+                            //一个正常的返回值:将导致提交
+                            throwableHolder.throwable = ex;
+                            return null;
+                        }
+                    }finally {
+                        cleanupTransactionInfo(txInfo);
+                    }
+                });
+
+                // Check result state: It might indicate a Throwable to rethrow.
+                if (throwableHolder.throwable != null) {
+                    throw throwableHolder.throwable;
+                }
+                return result;
+            }catch (ThrowableHolderException ex) {
+                throw ex.getCause();
+            }catch (TransactionSystemException ex2) {
+                if (throwableHolder.throwable != null) {
+                    logger.error("Application exception overridden by commit exception", throwableHolder.throwable);
+                    ex2.initApplicationException(throwableHolder.throwable);
+                }
+                throw ex2;
+            }catch (Throwable ex2) {
+                if (throwableHolder.throwable != null) {
+                    logger.error("Application exception overridden by commit exception", throwableHolder.throwable);
+                }
+                throw ex2;
+            }
+        }
+    }
 
 
 }
