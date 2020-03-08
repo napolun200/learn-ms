@@ -3,8 +3,10 @@ package com.gfm;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 @EnableAspectJAutoProxy(proxyTargetClass = true)
+@EnableTransactionManagement
 @SpringBootApplication
 public class LearnApplication {
 

@@ -1,5 +1,6 @@
 package com.gfm.utils;
 
+import com.gfm.LearnApplication;
 import org.aopalliance.intercept.MethodInterceptor;
 import org.aopalliance.intercept.MethodInvocation;
 import org.springframework.aop.*;
@@ -12,6 +13,8 @@ import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.BeanCurrentlyInCreationException;
 import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.core.Constants;
 import org.springframework.core.DecoratingProxy;
 import org.springframework.core.KotlinDetector;
@@ -23,10 +26,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.lang.Nullable;
 import org.springframework.transaction.*;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.TransactionAnnotationParser;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.*;
 import org.springframework.transaction.interceptor.*;
 import org.springframework.transaction.support.*;
 import org.springframework.util.Assert;
@@ -1282,7 +1282,32 @@ public class AopDemo {
 //
 //
 
+    //开启注解事务
+    @EnableTransactionManagement
+    @SpringBootApplication
+    public class LearnApplication {
+        public static void main(String[] args) {
+            SpringApplication.run(com.gfm.LearnApplication.class, args);
+        }
+    }
 
+
+    //PlatformTransactionManager:
+    //事务的主要管理接口，负责事务的获取，提交和回滚
+    public interface PlatformTransactionManager extends TransactionManager {
+        //根据指定的传播行为,返回当前激活事务或创建一个新的
+        TransactionStatus getTransaction(@Nullable TransactionDefinition definition)
+                throws TransactionException;
+
+        //提交事务
+        void commit(TransactionStatus status) throws TransactionException;
+
+        //回滚事务
+        void rollback(TransactionStatus status) throws TransactionException;
+    }
+
+    //TransactionDefinition:
+    //事务的定义接口
     public interface TransactionDefinition {
 
         //支持当前事物，若当前没有事物就创建一个事物
@@ -1358,6 +1383,8 @@ public class AopDemo {
     }
 
 
+    //TransactionStatus:
+    //事务的状态和行为接口
     public interface TransactionStatus extends TransactionExecution,SavepointManager,Flushable {
         //是否为新事务
         boolean isNewTransaction();
@@ -1863,6 +1890,8 @@ public class AopDemo {
      * Spring事务代理调用过程
      * 调用执行方法，实际上是调用 org.springframework.aop.framework.JdkDynamicAopProxy#invoke
      */
+
+    //Spring事务代理调用过程，实际上是调用org.springframework.aop.framework.JdkDynamicAopProxy#invoke
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         Object oldProxy = null;
         boolean setProxyContext = false;
@@ -2104,7 +2133,7 @@ public class AopDemo {
 
     //TransactionAspectSupport:
     protected TransactionInfo createTransactionIfNecessary(@Nullable PlatformTransactionManager tm,
-                                                                                    @Nullable TransactionAttribute txAttr, final String joinpointIdentification) {
+                                                           @Nullable TransactionAttribute txAttr, final String joinpointIdentification) {
         //把我们的方法描述符作为一个事务名称
         if (txAttr != null && txAttr.getName() == null) {
             txAttr = new DelegatingTransactionAttribute(txAttr) {
